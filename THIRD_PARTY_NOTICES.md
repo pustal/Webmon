@@ -1,7 +1,8 @@
 # Third-party notices
 
-Webmon contains no gen1recomp code and no game data. The player adds the
-official gen1recomp release (`.love`) and their own ROM.
+Webmon contains no gen1recomp code and no game data. The official gen1recomp
+release (`.love`) is downloaded onto the TV or added by the player, who also
+supplies their own ROM.
 
 | Component | Where | Licence |
 |---|---|---|
@@ -12,6 +13,7 @@ official gen1recomp release (`.love`) and their own ROM.
 | [FreeType](https://freetype.org) 2.13.3 | inside `liblove-11.5.so` | FreeType Licence |
 | libogg 1.3.5, libvorbis 1.3.7, libtheora 1.2.0 ([Xiph.Org](https://xiph.org)) | inside `liblove-11.5.so` | BSD 3-Clause |
 | [libmodplug](https://github.com/Konstanty/libmodplug) 0.8.9.0 | inside `liblove-11.5.so` | Public domain |
+| [cpp-httplib](https://github.com/yhirose/cpp-httplib) 0.63.0 | inside `bin/webmon` (`third_party/cpp-httplib/`) | MIT |
 | GCC runtime (`libstdc++`, `libgcc_s`) from the webosbrew toolchain | `lib/` | GPL-3.0 with the GCC Runtime Library Exception |
 
 Webmon runs [gen1recomp](https://github.com/bryanthaboi/gen1recomp):

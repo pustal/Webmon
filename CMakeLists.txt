@@ -7,7 +7,7 @@
 # or scripts/build-webos.sh for both.
 
 cmake_minimum_required(VERSION 3.21)
-project(Webmon VERSION 0.1.0 LANGUAGES C CXX)
+project(Webmon VERSION 0.2.0 LANGUAGES C CXX)
 
 set(WEBMON_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${WEBMON_ROOT}/cmake")
@@ -41,17 +41,44 @@ set_target_properties(Webmon::SDL2 PROPERTIES
     IMPORTED_SONAME "libSDL2-2.0.so.0"
     INTERFACE_COMPILE_DEFINITIONS "__WEBOS__")
 
+# ---- Text files embedded in the launcher: the upload page and the Lua bridge ----
+set(WEBMON_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+function(webmon_embed input output variable)
+    add_custom_command(
+        OUTPUT "${WEBMON_GENERATED_DIR}/${output}"
+        COMMAND "${CMAKE_COMMAND}" -DINPUT=${WEBMON_ROOT}/${input} -DOUTPUT=${WEBMON_GENERATED_DIR}/${output}
+                -DVARIABLE=${variable} -P "${WEBMON_ROOT}/cmake/EmbedTextFile.cmake"
+        DEPENDS "${WEBMON_ROOT}/${input}" "${WEBMON_ROOT}/cmake/EmbedTextFile.cmake"
+        COMMENT "Embedding ${input}")
+endfunction()
+webmon_embed(web/index.html WebPage.generated.h kWebPageHtml)
+webmon_embed(src/lua/bridge.lua BridgeScript.generated.h kBridgeScript)
+
+find_package(Threads REQUIRED)
+
 # ---- The launcher ----
 add_executable(webmon
     src/main.cpp
-    src/webos/GameLocator.cpp
+    src/server/WebServer.cpp
+    src/webos/Downloader.cpp
+    src/webos/Json.cpp
+    src/webos/Library.cpp
+    src/webos/LuaBridge.cpp
+    src/webos/NetInfo.cpp
     src/webos/Platform.cpp
+    src/webos/Process.cpp
+    src/webos/Usb.cpp
+    "${WEBMON_GENERATED_DIR}/WebPage.generated.h"
+    "${WEBMON_GENERATED_DIR}/BridgeScript.generated.h"
 )
 target_compile_features(webmon PRIVATE cxx_std_17)
 set_target_properties(webmon PROPERTIES CXX_EXTENSIONS OFF)
-target_include_directories(webmon PRIVATE "${WEBMON_ROOT}/src")
+target_include_directories(webmon PRIVATE "${WEBMON_ROOT}/src" "${WEBMON_GENERATED_DIR}")
+# cpp-httplib (MIT) is header-only; treat it as a system header so its warnings stay out of ours.
+target_include_directories(webmon SYSTEM PRIVATE "${WEBMON_ROOT}/third_party/cpp-httplib")
+target_compile_definitions(webmon PRIVATE WEBMON_VERSION="${PROJECT_VERSION}")
 target_compile_options(webmon PRIVATE -Wall -Wextra -Wshadow -Wconversion -Wno-sign-conversion)
-target_link_libraries(webmon PRIVATE Webmon::love Webmon::luajit Webmon::SDL2)
+target_link_libraries(webmon PRIVATE Webmon::love Webmon::luajit Webmon::SDL2 Threads::Threads)
 set_target_properties(webmon PROPERTIES
     BUILD_WITH_INSTALL_RPATH ON
     INSTALL_RPATH "\$ORIGIN/../lib")

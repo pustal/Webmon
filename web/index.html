@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Webmon upload page</title>
+<style>
+  :root {
+    --bg: #f6f1ee; --card: #ffffff; --text: #241c1a; --dim: #6f6360; --line: #e6dcd8;
+    --accent: #c0392b; --accent-dark: #962d22; --ok: #2e7d4f; --warn: #a86400; --bad: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1514; --card: #261e1c; --text: #f1e9e6; --dim: #b3a5a1; --line: #3b302d;
+            --accent: #e0584a; --accent-dark: #c0392b; --ok: #6cc28f; --warn: #e3a54a; --bad: #f0857c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { background: var(--accent); color: #fff; padding: 20px 16px; }
+  header h1 { margin: 0; font-size: 1.5rem; }
+  header p { margin: 4px 0 0; opacity: .9; font-size: .9rem; }
+  header a { color: #fff; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin: 0 0 16px; }
+  h2 { margin: 0 0 8px; font-size: 1.15rem; }
+  .muted { color: var(--dim); font-size: .9rem; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+  button, .button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 8px 14px;
+                    font: inherit; cursor: pointer; text-decoration: none; display: inline-block; }
+  button:hover, .button:hover { background: var(--accent-dark); }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  input[type=text], input[type=password], select { font: inherit; padding: 8px; border-radius: 8px;
+                    border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+  td, th { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .banner { border-radius: 10px; padding: 10px 14px; margin: 0 0 16px; font-weight: 600; }
+  .banner.pick { background: #fff3cd; color: #6b4f00; }
+  .banner.restart { background: #e3f2ea; color: #1e5236; }
+  progress { width: 100%; height: 10px; }
+  .hidden { display: none; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .tabs button { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  .tabs button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  footer { text-align: center; color: var(--dim); font-size: .85rem; padding: 8px 16px 32px; }
+  footer a { color: var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Webmon</h1>
+  <p>gen1recomp on your TV &middot; <a href="https://github.com/pustal/Webmon" target="_blank" rel="noopener">github.com/pustal/Webmon</a></p>
+</header>
+<main>
+  <section id="login">
+    <h2>Enter the PIN shown on the TV</h2>
+    <p class="muted">Press 1 on the remote to see it in the game.</p>
+    <div class="row">
+      <input id="pin" type="password" inputmode="numeric" maxlength="4" placeholder="PIN" autocomplete="off">
+      <button id="pin-button">Connect</button>
+      <span id="pin-error" class="bad"></span>
+    </div>
+  </section>
+
+  <div id="app" class="hidden">
+    <div id="pick-banner" class="banner pick hidden"></div>
+    <div id="restart-banner" class="banner restart hidden">New files arrived. Restart Webmon on the TV to use them.</div>
+
+    <section>
+      <h2>TV</h2>
+      <table><tbody id="status-table"></tbody></table>
+    </section>
+
+    <section>
+      <h2>USB drives</h2>
+      <p class="muted">Webmon keeps heavier files (the game, ROMs, saves, mods) in a <b>Webmon</b> folder on a USB drive
+        when there is one. ROMs and saves in RetroArch-style <b>roms</b> and <b>saves</b> folders at the root of a drive
+        also show up in the game's file picker.</p>
+      <table><thead><tr><th>Drive</th><th>Free</th><th>Access</th><th>Webmon folder</th></tr></thead>
+        <tbody id="drives-table"></tbody></table>
+    </section>
+
+    <section>
+      <h2>The game (gen1recomp .love)</h2>
+      <p id="game-line" class="muted"></p>
+      <div class="row">
+        <button id="download-latest">Download the latest release on the TV</button>
+      </div>
+      <div id="download-box" class="hidden">
+        <p id="download-text" class="muted"></p>
+        <progress id="download-progress" max="1" value="0"></progress>
+      </div>
+      <details>
+        <summary>Other releases</summary>
+        <p class="muted">Listed from GitHub by this browser.</p>
+        <table><tbody id="releases-table"><tr><td class="muted">Loading...</td></tr></tbody></table>
+      </details>
+    </section>
+
+    <section>
+      <h2>Files</h2>
+      <div class="tabs" id="tabs"></div>
+      <p id="kind-help" class="muted"></p>
+      <div class="row">
+        <input id="file-input" type="file" multiple>
+        <select id="dest">
+          <option value="usb">to the USB Webmon folder</option>
+          <option value="tv">to TV storage</option>
+        </select>
+        <button id="upload-button">Upload</button>
+      </div>
+      <div id="upload-box" class="hidden">
+        <p id="upload-text" class="muted"></p>
+        <progress id="upload-progress" max="1" value="0"></progress>
+      </div>
+      <table><thead><tr><th>File</th><th>Where</th><th>Size</th><th></th></tr></thead>
+        <tbody id="files-table"></tbody></table>
+    </section>
+  </div>
+</main>
+<footer>
+  Based on the Pokemon Gen 1 Recompilation Project by BOIS CLUB GAMES, LLC
+  (<a href="https://github.com/bryanthaboi/gen1recomp" target="_blank" rel="noopener">github.com/bryanthaboi/gen1recomp</a>).
+  Bring your own ROM. Webmon is not affiliated with Nintendo, Creatures, GAME FREAK or BOIS CLUB GAMES.
+</footer>
+
+<script>
+"use strict";
+
+/** File kinds the TV accepts, as named by its API. */
+const KINDS = [
+  { id: "love", label: "Game (.love)", accept: ".love", help: "The gen1recomp release file. The newest one is played." },
+  { id: "rom", label: "ROMs", accept: ".gb,.gbc,.gba", help: "Your own Game Boy / Game Boy Color / Game Boy Advance ROMs, offered by the game's Import ROM." },
+  { id: "sav", label: "Saves", accept: ".sav,.srm", help: "Battery saves (.sav, or RetroArch .srm), offered by the game's save import." },
+  { id: "mod", label: "Mod zips", accept: ".zip", help: "Mod archives, offered by the game's Install mod." },
+  { id: "cart", label: "Carts", accept: ".g1rcart", help: "Custom carts, offered by the game's cart install." },
+];
+const PICK_NAMES = { rom: "a ROM", sav: "a save file", mod: "a mod", cart: "a cart" };
+const RELEASES_API = "https://api.github.com/repos/bryanthaboi/gen1recomp/releases?per_page=8";
+
+/** @type {string} */
+let pin = "";
+/** @type {string} */
+let currentKind = "love";
+/** @type {any|null} last /api/status reply */
+let lastStatus = null;
+
+const $ = (id) => document.getElementById(id);
+
+/** Formats a byte count for people. @param {number} bytes */
+function formatBytes(bytes) {
+  if (!bytes) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+  return value.toFixed(unit === 0 ? 0 : 1) + " " + units[unit];
+}
+
+/** Creates an element with text. @param {string} tag @param {string} text @param {string=} className */
+function el(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+
+/**
+ * Calls the TV's API with the PIN.
+ * @param {string} method @param {string} path @param {BodyInit=} body
+ * @returns {Promise<any>} the parsed JSON reply
+ */
+async function api(method, path, body) {
+  const response = await fetch(path, { method, body, headers: { "X-Pin": pin } });
+  const text = await response.text();
+  if (!response.ok) throw new Error(text || response.statusText);
+  return text ? JSON.parse(text) : null;
+}
+
+// ---- PIN --------------------------------------------------------------------------
+
+async function connect() {
+  pin = $("pin").value.trim();
+  try {
+    await refreshStatus();
+    try { localStorage.setItem("webmon-pin", pin); } catch (e) { /* private mode */ }
+    $("login").classList.add("hidden");
+    $("app").classList.remove("hidden");
+    selectKind(currentKind);
+    loadReleases();
+    setInterval(refreshStatus, 2000);
+  } catch (error) {
+    $("pin-error").textContent = String(error.message || error);
+  }
+}
+
+// ---- Status -----------------------------------------------------------------------
+
+/** @param {HTMLElement} table @param {string} label @param {string} value @param {string=} cls */
+function addRow(table, label, value, cls) {
+  const row = el("tr");
+  row.appendChild(el("th", label));
+  row.appendChild(el("td", value, cls));
+  table.appendChild(row);
+}
+
+async function refreshStatus() {
+  const status = await api("GET", "/api/status");
+  lastStatus = status;
+
+  const table = $("status-table");
+  table.textContent = "";
+  addRow(table, "Webmon", status.version);
+  addRow(table, "Free space", formatBytes(status.tvFreeBytes));
+  addRow(table, "Root", status.root.detail, status.root.available ? "ok" : "warn");
+  addRow(table, "Downloads", status.curl ? "The TV can download by itself (curl)."
+                                           : "No curl on this TV: upload files instead.", status.curl ? "ok" : "warn");
+  const usb = status.usb.link === "none"
+    ? "Not in use (create a Webmon folder on a drive below)."
+    : status.usb.drive + "/Webmon (" + (status.usb.link === "bind" ? "through root" : "direct") + ", "
+      + (status.usb.writable ? "writable" : "read-only") + ")" + (status.usb.modsOnUsb ? ", game mods stored there" : "");
+  addRow(table, "USB storage", usb, status.usb.link === "none" ? "muted" : "ok");
+
+  const drives = $("drives-table");
+  drives.textContent = "";
+  if (status.drives.length === 0) {
+    const row = el("tr");
+    const cell = el("td", "No USB drive found.", "muted");
+    cell.colSpan = 4;
+    row.appendChild(cell);
+    drives.appendChild(row);
+  }
+  for (const drive of status.drives) {
+    const row = el("tr");
+    row.appendChild(el("td", drive.label));
+    row.appendChild(el("td", drive.spaceKnown ? formatBytes(drive.freeBytes) + " of " + formatBytes(drive.totalBytes) : "?"));
+    row.appendChild(el("td", drive.writable ? "read and write" : drive.readable ? "read only" : "through root only"));
+    const cell = el("td");
+    if (drive.hasWebmon) {
+      cell.appendChild(el("span", "Yes", "ok"));
+    } else {
+      const button = el("button", "Create Webmon folder", "secondary");
+      button.addEventListener("click", () => createWebmonFolder(drive.mount, button));
+      cell.appendChild(button);
+    }
+    row.appendChild(cell);
+    drives.appendChild(row);
+  }
+
+  $("game-line").textContent = status.game
+    ? "Playing: " + status.game.name + " (" + status.game.source + ")"
+    : "No game file yet: download or upload one.";
+  $("download-latest").disabled = !status.curl || status.download.active;
+
+  const download = status.download;
+  const showDownload = download.active || download.message;
+  $("download-box").classList.toggle("hidden", !showDownload);
+  $("download-text").textContent = download.message
+    + (download.active && download.total ? " (" + formatBytes(download.received) + " of " + formatBytes(download.total) + ")" : "");
+  $("download-progress").value = download.total ? download.received / download.total : (download.succeeded ? 1 : 0);
+  $("download-progress").classList.toggle("hidden", !download.active && !download.succeeded);
+
+  const pick = $("pick-banner");
+  pick.classList.toggle("hidden", !status.pendingPick);
+  if (status.pendingPick) {
+    pick.textContent = "The TV is waiting for " + (PICK_NAMES[status.pendingPick] || "a file")
+      + ". Upload it below and it appears in the list on the TV.";
+  }
+  $("restart-banner").classList.toggle("hidden", !status.restartSuggested);
+  $("dest").disabled = status.usb.link === "none";
+  if (status.usb.link === "none") $("dest").value = "tv";
+}
+
+/** @param {string} mount @param {HTMLButtonElement} button */
+async function createWebmonFolder(mount, button) {
+  button.disabled = true;
+  try {
+    await api("POST", "/api/usb/webmon?mount=" + encodeURIComponent(mount));
+    await refreshStatus();
+    await refreshFiles();
+  } catch (error) {
+    alert(String(error.message || error));
+    button.disabled = false;
+  }
+}
+
+// ---- Releases (listed by the browser, downloaded by the TV) -----------------------
+
+async function loadReleases() {
+  const table = $("releases-table");
+  try {
+    const response = await fetch(RELEASES_API, { headers: { Accept: "application/vnd.github+json" } });
+    if (!response.ok) throw new Error("GitHub replied " + response.status);
+    /** @type {Array<{tag_name: string, published_at: string, assets: Array<{name: string, size: number, browser_download_url: string}>}>} */
+    const releases = await response.json();
+    table.textContent = "";
+    for (const release of releases) {
+      const asset = release.assets.find((a) => a.name.toLowerCase().endsWith(".love"));
+      if (!asset) continue;
+      const row = el("tr");
+      row.appendChild(el("td", release.tag_name));
+      row.appendChild(el("td", new Date(release.published_at).toLocaleDateString()));
+      row.appendChild(el("td", formatBytes(asset.size)));
+      const actions = el("td");
+      const onTv = el("button", "Download on the TV", "secondary");
+      onTv.disabled = !(lastStatus && lastStatus.curl);
+      onTv.addEventListener("click", () => startDownload(asset.browser_download_url));
+      const here = el("a", "Download here", "button");
+      here.href = asset.browser_download_url;
+      here.style.marginLeft = "6px";
+      actions.appendChild(onTv);
+      actions.appendChild(here);
+      row.appendChild(actions);
+      table.appendChild(row);
+    }
+    if (!table.firstChild) table.appendChild(el("tr")).appendChild(el("td", "No releases with a .love file found.", "muted"));
+  } catch (error) {
+    table.textContent = "";
+    table.appendChild(el("tr")).appendChild(el("td", "Could not list releases: " + String(error.message || error), "muted"));
+  }
+}
+
+/** @param {string=} url a release asset, or nothing for the latest */
+async function startDownload(url) {
+  try {
+    await api("POST", "/api/download" + (url ? "?url=" + encodeURIComponent(url) : ""));
+    await refreshStatus();
+  } catch (error) {
+    alert(String(error.message || error));
+  }
+}
+
+// ---- Files --------------------------------------------------------------------------
+
+function buildTabs() {
+  const tabs = $("tabs");
+  for (const kind of KINDS) {
+    const button = el("button", kind.label);
+    button.dataset.kind = kind.id;
+    button.addEventListener("click", () => selectKind(kind.id));
+    tabs.appendChild(button);
+  }
+}
+
+/** @param {string} kindId */
+function selectKind(kindId) {
+  currentKind = kindId;
+  const kind = KINDS.find((k) => k.id === kindId);
+  for (const button of $("tabs").children) button.classList.toggle("active", button.dataset.kind === kindId);
+  $("kind-help").textContent = kind.help;
+  $("file-input").accept = kind.accept;
+  $("file-input").value = "";
+  refreshFiles();
+}
+
+async function refreshFiles() {
+  const table = $("files-table");
+  const files = await api("GET", "/api/files?kind=" + currentKind);
+  table.textContent = "";
+  if (files.length === 0) {
+    const cell = el("td", "None yet.", "muted");
+    cell.colSpan = 4;
+    table.appendChild(el("tr")).appendChild(cell);
+  }
+  for (const file of files) {
+    const row = el("tr");
+    row.appendChild(el("td", file.name));
+    row.appendChild(el("td", file.source, "muted"));
+    row.appendChild(el("td", formatBytes(file.size)));
+    const cell = el("td");
+    if (file.removable) {
+      const button = el("button", "Delete", "secondary");
+      button.addEventListener("click", async () => {
+        if (!confirm("Delete " + file.name + "?")) return;
+        try {
+          await api("DELETE", "/api/files?path=" + encodeURIComponent(file.path));
+        } catch (error) {
+          alert(String(error.message || error));
+        }
+        refreshFiles();
+      });
+      cell.appendChild(button);
+    }
+    row.appendChild(cell);
+    table.appendChild(row);
+  }
+}
+
+/**
+ * Uploads one file with progress.
+ * @param {File} file @param {(sent: number) => void} onProgress
+ * @returns {Promise<void>}
+ */
+function uploadFile(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    const dest = $("dest").disabled ? "tv" : $("dest").value;
+    request.open("PUT", "/api/files/" + currentKind + "/" + encodeURIComponent(file.name) + "?dest=" + dest);
+    request.setRequestHeader("X-Pin", pin);
+    request.upload.onprogress = (event) => onProgress(event.loaded);
+    request.onload = () => (request.status >= 200 && request.status < 300)
+      ? resolve() : reject(new Error(request.responseText || ("HTTP " + request.status)));
+    request.onerror = () => reject(new Error("The connection to the TV failed."));
+    request.send(file);
+  });
+}
+
+async function uploadSelected() {
+  // Copy the list first: clearing the input empties a live FileList.
+  const files = Array.from($("file-input").files || []);
+  if (files.length === 0) return;
+  const total = files.reduce((sum, f) => sum + f.size, 0);
+  let done = 0;
+  $("upload-box").classList.remove("hidden");
+  $("upload-button").disabled = true;
+  const failures = [];
+  for (const file of files) {
+    $("upload-text").textContent = "Uploading " + file.name + "...";
+    try {
+      await uploadFile(file, (sent) => { $("upload-progress").value = total ? (done + sent) / total : 0; });
+    } catch (error) {
+      failures.push(file.name + ": " + String(error.message || error));
+    }
+    done += file.size;
+  }
+  $("upload-progress").value = 1;
+  $("upload-text").textContent = failures.length
+    ? "Some files failed: " + failures.join("; ")
+    : files.length + " file(s) uploaded.";
+  $("upload-button").disabled = false;
+  $("file-input").value = "";
+  refreshFiles();
+  refreshStatus();
+}
+
+// ---- Start --------------------------------------------------------------------------
+
+buildTabs();
+$("pin-button").addEventListener("click", connect);
+$("pin").addEventListener("keydown", (event) => { if (event.key === "Enter") connect(); });
+$("download-latest").addEventListener("click", () => startDownload());
+$("upload-button").addEventListener("click", uploadSelected);
+try {
+  const saved = localStorage.getItem("webmon-pin");
+  if (saved) { $("pin").value = saved; connect(); }
+} catch (e) { /* private mode */ }
+</script>
+</body>
+</html>

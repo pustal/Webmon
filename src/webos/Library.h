@@ -1,0 +1,133 @@
+/**
+ * @file Library.h
+ * @brief Where Webmon keeps the player's files, and finding them again.
+ *
+ * TV storage (the app's data folder):
+ *   game/                 gen1recomp .love
+ *   inbox/roms|saves|mod-zips|carts/   files uploaded for the game's import screens
+ *   usb                   link (or root bind mount) to the active USB drive's Webmon folder
+ *
+ * USB drive (heavier content), "<drive>/Webmon/":
+ *   *.love                gen1recomp .love
+ *   roms/ saves/ mod-zips/ carts/      as in inbox/
+ *   mods/                 the game's installed mods (its own mods folder is linked here)
+ *
+ * The game's file pickers also list ROMs and saves found in RetroArch-style
+ * "roms/" and "saves/" folders at the root of any USB drive.
+ */
+#ifndef WEBMON_LIBRARY_H
+#define WEBMON_LIBRARY_H
+
+#include "Usb.h"
+
+#include <cstdint>
+#include <mutex>
+#include <string>
+#include <vector>
+
+namespace webmon
+{
+
+/** The kinds of file Webmon handles. */
+enum class FileKind { Love, Rom, Save, ModZip, Cart };
+
+/** A file the player can pick or manage. */
+struct LibraryFile {
+    FileKind kind;
+    std::string path;       ///< Absolute path (on a USB drive the app may not be able to read it)
+    std::string name;       ///< File name
+    std::string source;     ///< Where it was found, for people ("TV", "USB Webmon", "USB roms/gb", ...)
+    std::uint64_t size = 0;
+    bool removable     = false; ///< In a Webmon folder (not a RetroArch folder), so the page may delete it
+};
+
+/** How the USB Webmon folder is reached from the data folder. */
+enum class UsbLink { None, Symlink, BindMount };
+
+class Library
+{
+public:
+    Library(std::string dataFolder, Usb &usb);
+
+    /** Creates the TV folders, links the USB Webmon folder and the game's mods folder. */
+    void Prepare();
+
+    /**
+     * Re-links data/usb to the first drive with a Webmon folder (after the
+     * page created one). @return Empty on success, otherwise why not.
+     */
+    std::string LinkUsb();
+
+    /** How data/usb is linked, and to which drive. */
+    UsbLink ActiveUsbLink() const;
+    std::string ActiveUsbDrive() const;
+    /** True when files can be written into the USB Webmon folder by the app itself. */
+    bool UsbWritable() const;
+    /** True when the game's mods folder points at the USB drive. */
+    bool ModsOnUsb() const;
+
+    /** Every file of @p kind, newest first within each place. */
+    std::vector<LibraryFile> List(FileKind kind);
+
+    /**
+     * Folder an upload of @p kind should go to: the USB Webmon folder when it
+     * is active (and @p preferUsb), else TV storage.
+     */
+    std::string UploadFolder(FileKind kind, bool preferUsb) const;
+
+    /** Folder for files that are written first and moved into place afterwards. */
+    std::string IncomingFolder() const { return dataFolder_ + "/inbox/.incoming"; }
+
+    /**
+     * Moves the finished upload @p temporary to @p folder/@p name, with root
+     * if the app cannot write there. @return Empty on success, otherwise a message.
+     */
+    std::string Place(const std::string &temporary, const std::string &folder, const std::string &name);
+
+    /**
+     * A path the game can open for @p file: the file itself, or a copy made
+     * with root when the app cannot read the drive. Empty on failure.
+     */
+    std::string MakeReadable(const std::string &path);
+
+    /**
+     * The gen1recomp .love to run: the most recently modified one in TV
+     * storage or the USB Webmon folder. Empty if there is none.
+     */
+    std::string NewestGame();
+
+    /** Deletes @p path if it is a removable library file. @return Empty on success, otherwise a message. */
+    std::string Remove(const std::string &path);
+
+    /** True if @p name is a plain file name (no folders, not hidden) with an extension allowed for @p kind. */
+    static bool AcceptsName(FileKind kind, const std::string &name);
+
+    /** "love", "rom", "sav", "mod", "cart". */
+    static const char *KindName(FileKind kind);
+    /** Inverse of KindName. @return False for unknown names. */
+    static bool ParseKind(const std::string &name, FileKind *kind);
+
+    const std::string &DataFolder() const { return dataFolder_; }
+
+    /** gen1recomp's LÖVE save folder ($XDG_DATA_HOME/love/<identity>). */
+    std::string GameSaveFolder() const;
+
+private:
+    void LinkGameMods();
+    void AddFolder(std::vector<LibraryFile> &out, FileKind kind, const std::string &folder, const std::string &source,
+                   bool removable);
+    void AddRetroArch(std::vector<LibraryFile> &out, FileKind kind);
+
+    const std::string dataFolder_;
+    Usb &usb_;
+
+    mutable std::mutex mutex_;
+    UsbLink usbLink_ = UsbLink::None;
+    std::string usbDrive_;
+    bool usbWritable_ = false;
+    bool modsOnUsb_   = false;
+};
+
+} // namespace webmon
+
+#endif // WEBMON_LIBRARY_H

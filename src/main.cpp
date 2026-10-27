@@ -5,16 +5,23 @@
  * Based on LÖVE 11.5's own main program (src/love.cpp, zlib licence,
  * Copyright (c) 2006-2024 LOVE Development Team), with webOS start-up added:
  *   1. enter the data folder, open the logs, point LÖVE's saves there;
- *   2. take over the remote's Back/Exit keys;
- *   3. run the player's gen1recomp .love if one is found (GameLocator.h),
- *      otherwise Webmon's setup screen (share/setup/, Lua).
+ *   2. check root access, link the USB drive's Webmon folder and the game's
+ *      mods folder (Library.h), start the upload page (WebServer.h);
+ *   3. take over the remote's Back/Exit keys;
+ *   4. run the player's gen1recomp .love if one is found, otherwise Webmon's
+ *      setup screen (share/setup/, Lua), with the Lua bridge (LuaBridge.h)
+ *      providing the game's file picker and the info panel.
  *
  * The game asks LÖVE to restart itself after imports and updates
  * (love.event.quit("restart")); each restart searches for the .love again,
  * so a newly added one is picked up.
  */
-#include "webos/GameLocator.h"
+#include "server/WebServer.h"
+#include "webos/Downloader.h"
+#include "webos/Library.h"
+#include "webos/LuaBridge.h"
 #include "webos/Platform.h"
+#include "webos/Usb.h"
 
 #include "common/runtime.h"
 #include "common/version.h"
@@ -32,6 +39,10 @@ extern "C" {
 #include <cstring>
 #include <string>
 #include <vector>
+
+#ifndef WEBMON_VERSION
+#define WEBMON_VERSION "dev"
+#endif
 
 namespace
 {
@@ -51,10 +62,10 @@ void Preload(lua_State *L, lua_CFunction function, const char *name)
 
 /**
  * Runs one LÖVE session with @p args as the command line (args[0] is the
- * program, args[1] the game) and returns how it ended; @p exitCode receives
- * the game's exit status.
+ * program, args[1] the game) and @p bridge's services available to Lua, and
+ * returns how it ended; @p exitCode receives the game's exit status.
  */
-DoneAction RunLove(const std::vector<std::string> &args, int &exitCode)
+DoneAction RunLove(const std::vector<std::string> &args, const webmon::BridgeContext &bridge, int &exitCode)
 {
     lua_State *L = luaL_newstate();
     luaL_openlibs(L);
@@ -66,6 +77,9 @@ DoneAction RunLove(const std::vector<std::string> &args, int &exitCode)
     lua_call(L, 1, 0);
 
     Preload(L, luaopen_love, "love");
+
+    // Webmon's Lua API and the file picker / info panel bridge.
+    webmon::InstallLuaBridge(L, bridge);
 
     // Global arg, as in stand-alone Lua: arg[-2] program, arg[-1] boot script, arg[1..] the rest.
     lua_newtable(L);
@@ -119,13 +133,28 @@ int main(int argc, char **argv)
     }
 
     const std::string dataFolder = webmon::PrepareDataFolder();
+
+    // Services that live for the whole process, across the game's restarts.
+    webmon::Usb usb;
+    usb.ProbeRoot();
+    webmon::Library library(dataFolder, usb);
+    library.Prepare();
+    webmon::Downloader downloader(library.IncomingFolder(), [&library](const std::string &temporary,
+                                                                       const std::string &name) {
+        return library.Place(temporary, library.UploadFolder(webmon::FileKind::Love, true), name);
+    });
+    webmon::WebServer server(library, usb, downloader, webmon::WebServer::LoadOrCreatePin(dataFolder),
+                             WEBMON_VERSION);
+    if (!server.Start())
+        std::fprintf(stderr, "[Webmon] the upload page could not start (no free port)\n");
+    const webmon::BridgeContext bridge{ &library, &server, &downloader };
     const std::string setupGame = webmon::ExecutableFolder() + "/../share/setup";
 
     int exitCode    = 0;
     DoneAction done = DoneAction::Quit;
     do {
         std::vector<std::string> args = { argc > 0 ? argv[0] : "webmon" };
-        const std::string game        = webmon::FindGame(dataFolder);
+        const std::string game        = library.NewestGame();
         if (!game.empty()) {
             std::printf("[Webmon] running %s\n", game.c_str());
             args.push_back(game);
@@ -138,8 +167,9 @@ int main(int argc, char **argv)
         }
         // Again on every run: LÖVE shuts SDL down between runs, which drops the event filter.
         webmon::InstallRemoteHandling();
-        done = RunLove(args, exitCode);
+        done = RunLove(args, bridge, exitCode);
     } while (done == DoneAction::Restart);
 
+    server.Stop();
     return exitCode;
 }
