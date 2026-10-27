@@ -85,9 +85,10 @@
     <section>
       <h2>Memory for heavy mods</h2>
       <p class="muted">webOS restarts the app when the TV runs out of free memory, which big mods (voxel worlds
-        building their cache) can cause. With root, a <b>swap file</b> in the USB Webmon folder gives the TV room to
-        spare. It is switched on whenever Webmon runs. Flash drives are slow and wear with writing, so only use it if
-        you need it; FAT32 and ext4 drives work.</p>
+        building their cache) can cause. Webmon frees memory promptly while they work, and the TV usually has
+        compressed swap of its own (shown above). With root, a <b>swap file</b> in the USB Webmon folder can add more.
+        It is switched on whenever Webmon runs. Flash drives are slow and wear with writing, so only use it if you
+        need it; FAT32 and ext4 drives work, NTFS does not.</p>
       <p id="swap-line"></p>
       <div class="row" id="swap-controls">
         <select id="swap-size">
@@ -98,6 +99,18 @@
         <button id="swap-create">Create swap file</button>
         <button id="swap-remove" class="secondary">Remove swap file</button>
       </div>
+    </section>
+
+    <section>
+      <h2>Mod data</h2>
+      <p class="muted">Mods keep their files per game and playthrough. A voxel world mod's map cache lives here,
+        and when the game gives a playthrough a new id (for example after the app was closed during a cache build)
+        the mod starts a new cache and the old one stays behind. Delete the ones you no longer need; the newest is
+        usually the one in use. A deleted cache is rebuilt when needed.</p>
+      <div class="row"><button id="mod-storage-refresh" class="secondary">Refresh</button>
+        <span id="mod-storage-note" class="muted"></span></div>
+      <table><thead><tr><th>Game</th><th>Playthrough</th><th>Size</th><th>Last changed</th><th></th></tr></thead>
+        <tbody id="mod-storage-table"></tbody></table>
     </section>
 
     <section>
@@ -208,6 +221,7 @@ async function connect() {
     $("app").classList.remove("hidden");
     selectKind(currentKind);
     loadReleases();
+    refreshModStorage();
     setInterval(refreshStatus, 2000);
   } catch (error) {
     $("pin-error").textContent = String(error.message || error);
@@ -319,6 +333,77 @@ async function createWebmonFolder(mount, button) {
   } catch (error) {
     alert(String(error.message || error));
     button.disabled = false;
+  }
+}
+
+// ---- Mod data -------------------------------------------------------------------------
+
+/** @param {string} game @param {string} playthrough */
+async function deleteModStorage(game, playthrough) {
+  await api("DELETE", "/api/mod-storage?game=" + encodeURIComponent(game) + "&playthrough=" + encodeURIComponent(playthrough));
+}
+
+async function refreshModStorage() {
+  const table = $("mod-storage-table");
+  $("mod-storage-note").textContent = "Measuring...";
+  /** @type {Array<{game: string, playthrough: string, bytes: number, modified: number, newest: boolean}>} */
+  let folders;
+  try {
+    folders = await api("GET", "/api/mod-storage");
+  } catch (error) {
+    $("mod-storage-note").textContent = String(error.message || error);
+    return;
+  }
+  table.textContent = "";
+  const total = folders.reduce((sum, f) => sum + f.bytes, 0);
+  $("mod-storage-note").textContent = folders.length ? formatBytes(total) + " in total." : "";
+  if (folders.length === 0) {
+    const cell = el("td", "No mod data yet.", "muted");
+    cell.colSpan = 5;
+    table.appendChild(el("tr")).appendChild(cell);
+    return;
+  }
+  let lastGame = "";
+  for (const folder of folders) {
+    if (folder.game !== lastGame) {
+      lastGame = folder.game;
+      const others = folders.filter((f) => f.game === folder.game && !f.newest);
+      const header = el("tr");
+      const name = el("th", folder.game.charAt(0).toUpperCase() + folder.game.slice(1));
+      name.colSpan = 4;
+      header.appendChild(name);
+      const cell = el("th");
+      if (others.length > 0) {
+        const button = el("button", "Delete all but the newest", "secondary");
+        button.addEventListener("click", async () => {
+          if (!confirm("Delete " + others.length + " older playthrough folder(s) of " + folder.game + "?")) return;
+          button.disabled = true;
+          for (const old of others) {
+            try { await deleteModStorage(old.game, old.playthrough); } catch (error) { alert(String(error.message || error)); break; }
+          }
+          refreshModStorage();
+        });
+        cell.appendChild(button);
+      }
+      header.appendChild(cell);
+      table.appendChild(header);
+    }
+    const row = el("tr");
+    row.appendChild(el("td", ""));
+    row.appendChild(el("td", folder.playthrough + (folder.newest ? " (newest)" : ""), folder.newest ? "ok" : ""));
+    row.appendChild(el("td", formatBytes(folder.bytes) || "0 B"));
+    row.appendChild(el("td", folder.modified ? new Date(folder.modified * 1000).toLocaleString() : ""));
+    const cell = el("td");
+    const button = el("button", "Delete", "secondary");
+    button.addEventListener("click", async () => {
+      const warning = folder.newest ? " This is the newest one, probably the playthrough you are using." : "";
+      if (!confirm("Delete the mod data of " + folder.game + " playthrough " + folder.playthrough + "?" + warning)) return;
+      try { await deleteModStorage(folder.game, folder.playthrough); } catch (error) { alert(String(error.message || error)); }
+      refreshModStorage();
+    });
+    cell.appendChild(button);
+    row.appendChild(cell);
+    table.appendChild(row);
   }
 }
 
@@ -478,6 +563,7 @@ $("pin-button").addEventListener("click", connect);
 $("pin").addEventListener("keydown", (event) => { if (event.key === "Enter") connect(); });
 $("download-latest").addEventListener("click", () => startDownload());
 $("upload-button").addEventListener("click", uploadSelected);
+$("mod-storage-refresh").addEventListener("click", refreshModStorage);
 $("swap-create").addEventListener("click", async () => {
   if (!confirm("Create a " + $("swap-size").value + " MB swap file on the USB drive? This takes a few minutes.")) return;
   try { await api("POST", "/api/swap?size=" + $("swap-size").value); } catch (error) { alert(String(error.message || error)); }

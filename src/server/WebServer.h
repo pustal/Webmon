@@ -20,6 +20,8 @@
  *   POST   /api/usb/webmon?mount=<mount point>
  *   POST   /api/swap?size=<MB>                      create a swap file on the USB drive (root)
  *   DELETE /api/swap                                remove it
+ *   GET    /api/mod-storage                         the game's mod data per playthrough
+ *   DELETE /api/mod-storage?game=<g>&playthrough=<id>   delete one
  */
 #ifndef WEBMON_WEB_SERVER_H
 #define WEBMON_WEB_SERVER_H

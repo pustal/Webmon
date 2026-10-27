@@ -383,6 +383,30 @@ void WebServer::RegisterRoutes()
         Ok(res, "Webmon folder ready. Restart Webmon so the game keeps its data there.");
     });
 
+    server.Get("/api/mod-storage", [this](const httplib::Request &, httplib::Response &res) {
+        std::ostringstream out;
+        out << "[";
+        bool first = true;
+        for (const ModStorageFolder &folder : library_.ModStorage()) {
+            out << (first ? "" : ",") << "{\"game\":" << json::Quote(folder.game)
+                << ",\"playthrough\":" << json::Quote(folder.playthrough) << ",\"bytes\":" << folder.bytes
+                << ",\"modified\":" << folder.modified << ",\"newest\":" << json::Bool(folder.newest) << "}";
+            first = false;
+        }
+        out << "]";
+        res.set_content(out.str(), kJsonType);
+    });
+
+    server.Delete("/api/mod-storage", [this](const httplib::Request &req, httplib::Response &res) {
+        const std::string error =
+            library_.RemoveModStorage(req.get_param_value("game"), req.get_param_value("playthrough"));
+        if (!error.empty()) {
+            Fail(res, 400, error);
+            return;
+        }
+        Ok(res, "Deleted.");
+    });
+
     server.Post("/api/swap", [this](const httplib::Request &req, httplib::Response &res) {
         std::uint32_t size = 0;
         try {

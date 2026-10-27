@@ -243,6 +243,7 @@ void Library::PlaceGameData()
 
     std::lock_guard<std::mutex> lock(mutex_);
     gameDataOnUsb_ = onUsb;
+    gameFolder_    = onUsb ? usbGame : tvGame;
 }
 
 UsbLink Library::ActiveUsbLink() const
@@ -401,6 +402,89 @@ std::string Library::MakeReadable(const std::string &path)
                         Usb::ShellQuote(copy)))
         return std::string();
     return copy;
+}
+
+namespace
+{
+
+/** True for the plain names gen1recomp uses for games and playthrough ids. */
+bool IsPlainSegment(const std::string &text)
+{
+    if (text.empty() || text.size() > 100)
+        return false;
+    for (const char c : text) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-')
+            return false;
+    }
+    return true;
+}
+
+} // namespace
+
+std::vector<ModStorageFolder> Library::ModStorage()
+{
+    std::string root;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        root = gameFolder_ + "/mod_storage";
+    }
+    std::vector<ModStorageFolder> folders;
+    std::error_code ec;
+    for (fs::directory_iterator game(root, fs::directory_options::skip_permission_denied, ec), end; !ec && game != end;
+         game.increment(ec)) {
+        const std::string gameName = game->path().filename().string();
+        if (!game->is_directory(ec) || !IsPlainSegment(gameName))
+            continue;
+        const std::size_t firstOfGame = folders.size();
+        for (fs::directory_iterator run(game->path(), fs::directory_options::skip_permission_denied, ec), stop;
+             !ec && run != stop; run.increment(ec)) {
+            const std::string id = run->path().filename().string();
+            if (!run->is_directory(ec) || !IsPlainSegment(id))
+                continue;
+            ModStorageFolder folder{ gameName, id, 0, 0, false };
+            for (fs::recursive_directory_iterator it(run->path(), fs::directory_options::skip_permission_denied, ec),
+                 done;
+                 !ec && it != done; it.increment(ec)) {
+                if (!it->is_regular_file(ec))
+                    continue;
+                folder.bytes += it->file_size(ec);
+                struct stat info {};
+                if (stat(it->path().c_str(), &info) == 0 && info.st_mtime > folder.modified)
+                    folder.modified = static_cast<std::int64_t>(info.st_mtime);
+            }
+            ec.clear();
+            folders.push_back(folder);
+        }
+        ec.clear();
+        // Newest first within the game, and mark it.
+        std::sort(folders.begin() + static_cast<std::ptrdiff_t>(firstOfGame), folders.end(),
+                  [](const ModStorageFolder &a, const ModStorageFolder &b) { return a.modified > b.modified; });
+        if (folders.size() > firstOfGame)
+            folders[firstOfGame].newest = true;
+    }
+    return folders;
+}
+
+std::string Library::RemoveModStorage(const std::string &game, const std::string &playthrough)
+{
+    if (!IsPlainSegment(game) || !IsPlainSegment(playthrough))
+        return "Unknown game or playthrough.";
+    std::string folder;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        folder = gameFolder_ + "/mod_storage/" + game + "/" + playthrough;
+    }
+    std::error_code ec;
+    if (!fs::is_directory(folder, ec))
+        return "That folder does not exist.";
+    fs::remove_all(folder, ec);
+    if (ec) {
+        if (usb_.Root().Available() && usb_.RunAsRoot("rm -rf " + Usb::ShellQuote(folder), nullptr, 10 * 60 * 1000))
+            return std::string();
+        return "Could not delete it: " + ec.message();
+    }
+    std::printf("[Webmon] deleted mod data %s/%s\n", game.c_str(), playthrough.c_str());
+    return std::string();
 }
 
 std::string Library::NewestGame()

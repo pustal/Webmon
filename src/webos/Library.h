@@ -42,6 +42,20 @@ struct LibraryFile {
     bool removable     = false; ///< In a Webmon folder (not a RetroArch folder), so the page may delete it
 };
 
+/**
+ * One playthrough's mod data: gen1recomp keeps each mod's files per game and
+ * playthrough in <game data>/mod_storage/<game>/<playthrough id>/. A voxel
+ * world mod's map cache lives there, and a new playthrough id starts a new
+ * cache, so old ones can pile up.
+ */
+struct ModStorageFolder {
+    std::string game;            ///< "red", "yellow", ...
+    std::string playthrough;     ///< The game's opaque playthrough id
+    std::uint64_t bytes = 0;     ///< Total size of its files
+    std::int64_t modified = 0;   ///< Newest file change (Unix time)
+    bool newest = false;         ///< The most recently changed one of its game
+};
+
 /** How the USB Webmon folder is reached from the data folder. */
 enum class UsbLink { None, Symlink, BindMount };
 
@@ -117,6 +131,15 @@ public:
      */
     static bool LooksLikePokemon(const std::string &name);
 
+    /** Every playthrough folder in the game's mod_storage, by game, newest first. */
+    std::vector<ModStorageFolder> ModStorage();
+
+    /**
+     * Deletes mod_storage/<@p game>/<@p playthrough> (both plain names).
+     * @return Empty on success, otherwise a message for the page.
+     */
+    std::string RemoveModStorage(const std::string &game, const std::string &playthrough);
+
 private:
     void PlaceGameData();
     void AddFolder(std::vector<LibraryFile> &out, FileKind kind, const std::string &folder, const std::string &source,
@@ -131,6 +154,7 @@ private:
     std::string usbDrive_;
     bool usbWritable_ = false;
     bool gameDataOnUsb_ = false;
+    std::string gameFolder_; ///< $XDG_DATA_HOME/love/<identity>, chosen by PlaceGameData()
 };
 
 } // namespace webmon

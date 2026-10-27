@@ -53,6 +53,8 @@ network that send the PIN. It shows:
 - **The game**: download the latest release, or any listed release, onto the
   TV, or download it to your computer;
 - **Memory for heavy mods**: the TV's memory, and an optional swap file (below);
+- **Mod data**: each game's per-playthrough mod folders, with their size, to
+  delete old map caches;
 - **Files**: upload, list and delete the game, ROMs, saves, mod zips and carts,
   to TV storage or the USB `Webmon` folder. While the game's picker is open the
   page says what it is waiting for, and new uploads appear in the picker by
@@ -90,14 +92,24 @@ lot of 3D data at once. Webmon helps in two ways:
   Webmon checks the process size every second and runs a full clean-up after
   it grows by 48 MB, or when the TV has less than 160 MB available. The log
   (`stdout.log`) records each clean-up and every new peak.
-- **A swap file (root, optional).** The upload page can create a swap file of
-  512 MB to 2 GB in the USB `Webmon` folder. Webmon switches it on whenever it
-  runs and off when it closes. Flash drives are slow and wear with writing, so
-  use it only if a mod needs it; FAT32 and ext4 drives work.
+- **A swap file (root, optional).** webOS TVs usually have compressed swap of
+  their own (the upload page shows it). The page can add a swap file of 512 MB
+  to 2 GB in the USB `Webmon` folder; Webmon switches it on whenever it runs
+  and off when it closes. Flash drives are slow and wear with writing, so use
+  it only if a mod needs it; FAT32 and ext4 drives work, NTFS cannot hold swap.
 
 If the app is restarted in the middle of a cache build, choose the mod's
 prebuild again: PotatoVoxel resumes where it stopped. A lower quality preset
-(LOW or POTATO) also needs less memory.
+(LOW or POTATO) also needs less memory. A first build can take long enough for
+the TV's own power saving to switch it off (LG: Settings > General > System >
+Eco / Power Saving, "Auto Power Off"); turn that off for the build or press a
+remote button now and then.
+
+Mods keep their data per game and playthrough (`mod_storage/<game>/<id>/` in
+the game's data). When the game gives a playthrough a new id, for example after
+the app was closed during a build, a voxel mod starts a new cache and the old
+one stays behind. The upload page's **Mod data** section lists these folders
+with their size and date, and deletes old ones.
 
 ## Controls
 
