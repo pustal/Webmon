@@ -41,12 +41,14 @@ constexpr std::array<KindInfo, 5> kKinds = { {
 } };
 
 /** USB Webmon sub-folders created with the folder itself. */
-const std::vector<std::string> kUsbSubFolders = { "roms", "saves", "mod-zips", "carts", "mods" };
+const std::vector<std::string> kUsbSubFolders = { "roms", "saves", "mod-zips", "carts", "game-data" };
 
 /** Deepest folder level searched below a RetroArch "roms"/"saves" folder. */
 constexpr int kRetroArchDepth = 3;
-/** Most files listed from one RetroArch folder. */
-constexpr std::size_t kRetroArchLimit = 2000;
+/** Most entries visited in one RetroArch folder (big collections stay quick to scan). */
+constexpr std::size_t kRetroArchScanLimit = 50000;
+/** LÖVE identity of gen1recomp (conf.lua), unless POKEPORT_IDENTITY overrides it. */
+constexpr const char *kGameIdentity = "pokemon-love2d";
 
 const KindInfo &Info(FileKind kind)
 {
@@ -78,12 +80,6 @@ bool HasExtension(FileKind kind, const std::string &name)
     return false;
 }
 
-bool IsDirectory(const std::string &path)
-{
-    struct stat info {};
-    return stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
-}
-
 } // namespace
 
 const char *Library::KindName(FileKind kind)
@@ -113,10 +109,16 @@ bool Library::AcceptsName(FileKind kind, const std::string &name)
 
 Library::Library(std::string dataFolder, Usb &usb) : dataFolder_(std::move(dataFolder)), usb_(usb) {}
 
-std::string Library::GameSaveFolder() const
+bool Library::LooksLikePokemon(const std::string &name)
 {
-    const char *identity = std::getenv("POKEPORT_IDENTITY");
-    return dataFolder_ + "/save/love/" + (identity && *identity ? identity : "pokemon-love2d");
+    const std::string lower = Lower(name);
+    // "pokémon" in UTF-8 lower case; Lower() leaves the two bytes of "é" alone.
+    static const char *const kNeedles[] = { "pokemon", "pok\xc3\xa9mon", "pok\xc3\x89mon", "pkmn", "pocket monsters" };
+    for (const char *needle : kNeedles) {
+        if (lower.find(needle) != std::string::npos)
+            return true;
+    }
+    return false;
 }
 
 void Library::Prepare()
@@ -126,12 +128,11 @@ void Library::Prepare()
         fs::create_directories(dataFolder_ + "/" + info.tvFolder, ec);
     fs::create_directories(IncomingFolder(), ec);
     fs::create_directories(dataFolder_ + "/inbox/.picked", ec);
-    fs::create_directories(GameSaveFolder(), ec);
 
     const std::string message = LinkUsb();
     if (!message.empty())
         std::printf("[Webmon] USB: %s\n", message.c_str());
-    LinkGameMods();
+    PlaceGameData();
 }
 
 std::string Library::LinkUsb()
@@ -192,33 +193,56 @@ std::string Library::LinkUsb()
     return message;
 }
 
-void Library::LinkGameMods()
+void Library::PlaceGameData()
 {
-    const std::string mods = GameSaveFolder() + "/mods";
-    const std::string target = dataFolder_ + "/usb/mods";
+    const char *identityOverride = std::getenv("POKEPORT_IDENTITY");
+    const std::string identity   = identityOverride && *identityOverride ? identityOverride : kGameIdentity;
+    const std::string tvRoot     = dataFolder_ + "/save";
+    const std::string usbRoot    = dataFolder_ + "/usb/game-data";
+    const std::string tvGame     = tvRoot + "/love/" + identity;
+    const std::string usbGame    = usbRoot + "/love/" + identity;
     std::error_code ec;
-    bool onUsb = false;
 
-    const bool useUsb = UsbWritable() && IsDirectory(target);
-    if (fs::is_symlink(mods, ec)) {
-        fs::remove(mods, ec); // re-made below, so it always points at the current drive
-    }
-    if (useUsb) {
-        const bool emptyOrMissing = !fs::exists(mods, ec) || fs::is_empty(mods, ec);
-        if (emptyOrMissing) {
-            fs::remove(mods, ec);
-            fs::create_directory_symlink(target, mods, ec);
-            onUsb = !ec;
-        } else {
-            std::printf("[Webmon] mods: already on TV storage, keeping them there\n");
+    // Version 0.2.0 linked the game's mods folder to <USB>/Webmon/mods: undo that first.
+    if (fs::is_symlink(tvGame + "/mods", ec))
+        fs::remove(tvGame + "/mods", ec);
+
+    bool onUsb = false;
+    if (UsbWritable()) {
+        fs::create_directories(usbRoot, ec);
+        const bool usbHasData = fs::exists(usbGame, ec);
+        const bool tvHasData  = fs::exists(tvGame, ec) && !fs::is_empty(tvGame, ec);
+        bool moved = true;
+        if (!usbHasData && tvHasData) {
+            // First run with this drive: move the game's data over (copy, then free the TV storage).
+            std::printf("[Webmon] moving the game's data to the USB drive...\n");
+            fs::create_directories(usbRoot + "/love", ec);
+            fs::copy(tvGame, usbGame, fs::copy_options::recursive | fs::copy_options::copy_symlinks, ec);
+            if (ec) {
+                // Keep playing from TV storage rather than with an empty data folder on the drive.
+                std::printf("[Webmon] could not move the game's data: %s\n", ec.message().c_str());
+                std::error_code ignored;
+                fs::remove_all(usbGame, ignored);
+                moved = false;
+            } else {
+                fs::remove_all(tvGame, ec);
+            }
         }
+        // Mods installed into <USB>/Webmon/mods by version 0.2.0 join the game's data.
+        const std::string oldMods = dataFolder_ + "/usb/mods";
+        if (fs::is_directory(oldMods, ec) && !fs::exists(usbGame + "/mods", ec)) {
+            fs::create_directories(usbGame, ec);
+            fs::rename(oldMods, usbGame + "/mods", ec);
+        }
+        onUsb = moved && Usb::CanWrite(usbRoot);
     }
-    if (!onUsb)
-        fs::create_directories(mods, ec);
-    std::printf("[Webmon] mods: %s\n", onUsb ? "on the USB drive" : "on TV storage");
+
+    // LÖVE keeps a game's data in $XDG_DATA_HOME/love/<identity>.
+    setenv("XDG_DATA_HOME", (onUsb ? usbRoot : tvRoot).c_str(), 1);
+    std::printf("[Webmon] game data: %s\n", onUsb ? "on the USB drive" : "on TV storage");
 
     std::lock_guard<std::mutex> lock(mutex_);
-    modsOnUsb_ = onUsb;
+    gameDataOnUsb_ = onUsb;
 }
 
 UsbLink Library::ActiveUsbLink() const
@@ -239,10 +263,10 @@ bool Library::UsbWritable() const
     return usbWritable_;
 }
 
-bool Library::ModsOnUsb() const
+bool Library::GameDataOnUsb() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    return modsOnUsb_;
+    return gameDataOnUsb_;
 }
 
 void Library::AddFolder(std::vector<LibraryFile> &out, FileKind kind, const std::string &folder,
@@ -280,20 +304,19 @@ void Library::AddRetroArch(std::vector<LibraryFile> &out, FileKind kind)
                  !ec && top != end; top.increment(ec)) {
                 if (!top->is_directory(ec) || Lower(top->path().filename().string()) != folderName)
                     continue;
-                std::size_t listed = 0;
+                std::size_t visited = 0;
                 for (fs::recursive_directory_iterator it(top->path(), fs::directory_options::skip_permission_denied, ec),
                      stop;
-                     !ec && it != stop && listed < kRetroArchLimit; it.increment(ec)) {
+                     !ec && it != stop && visited < kRetroArchScanLimit; it.increment(ec), ++visited) {
                     if (it.depth() >= kRetroArchDepth)
                         it.disable_recursion_pending();
                     const std::string name = it->path().filename().string();
-                    if (!it->is_regular_file(ec) || !AcceptsName(kind, name))
+                    if (!LooksLikePokemon(name) || !AcceptsName(kind, name) || !it->is_regular_file(ec))
                         continue;
                     const std::string where =
                         fs::relative(it->path().parent_path(), drive.mountPoint, ec).string();
                     out.push_back({ kind, it->path().string(), name, "USB " + drive.label + ": " + where,
                                     it->file_size(ec), false });
-                    ++listed;
                 }
             }
         } else if (usb_.Root().Available()) {
@@ -303,14 +326,15 @@ void Library::AddRetroArch(std::vector<LibraryFile> &out, FileKind kind)
                                         "n=$(basename \"$d\" | tr 'A-Z' 'a-z'); "
                                         "[ -d \"$d\" ] && [ \"$n\" = " + std::string(folderName) + " ] && "
                                         "find \"$d\" -maxdepth " + std::to_string(kRetroArchDepth + 1) +
-                                        " -type f; done | head -n " + std::to_string(kRetroArchLimit);
+                                        " -type f; done | grep -i -e pok.mon -e pok..mon -e pkmn -e 'pocket monsters'"
+                                        " | head -n " + std::to_string(kRetroArchScanLimit);
             if (!usb_.RunAsRoot(command, &listing))
                 continue;
             std::istringstream lines(listing);
             std::string path;
             while (std::getline(lines, path)) {
                 const std::string name = fs::path(path).filename().string();
-                if (!AcceptsName(kind, name))
+                if (!LooksLikePokemon(name) || !AcceptsName(kind, name))
                     continue;
                 std::error_code ec;
                 const std::string where = fs::relative(fs::path(path).parent_path(), drive.mountPoint, ec).string();

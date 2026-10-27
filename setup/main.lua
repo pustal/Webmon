@@ -74,8 +74,8 @@ function love.update(dt)
 end
 
 function love.keypressed(key)
-  -- Back / Exit on the remote arrive as Escape.
-  if key == "escape" then
+  -- Back on the remote arrives as X (the game's B button); Exit closes Webmon by itself.
+  if key == "escape" or key == "x" then
     love.event.quit()
   elseif key == "return" or key == "kpenter" then
     startDownload()
@@ -184,7 +184,7 @@ function love.draw()
 
   love.graphics.setColor(0.75, 0.68, 0.68)
   love.graphics.print(CREDIT, x, height - 170)
-  love.graphics.print("OK: download   Back: quit", x, height - 135)
+  love.graphics.print("OK: download   Back: quit   Help and updates: github.com/pustal/Webmon", x, height - 135)
 
   drawTestPattern(width, height)
 end

@@ -7,7 +7,7 @@
 # or scripts/build-webos.sh for both.
 
 cmake_minimum_required(VERSION 3.21)
-project(Webmon VERSION 0.2.0 LANGUAGES C CXX)
+project(Webmon VERSION 0.2.1 LANGUAGES C CXX)
 
 set(WEBMON_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${WEBMON_ROOT}/cmake")
@@ -77,7 +77,8 @@ target_include_directories(webmon PRIVATE "${WEBMON_ROOT}/src" "${WEBMON_GENERAT
 # cpp-httplib (MIT) is header-only; treat it as a system header so its warnings stay out of ours.
 target_include_directories(webmon SYSTEM PRIVATE "${WEBMON_ROOT}/third_party/cpp-httplib")
 target_compile_definitions(webmon PRIVATE WEBMON_VERSION="${PROJECT_VERSION}")
-target_compile_options(webmon PRIVATE -Wall -Wextra -Wshadow -Wconversion -Wno-sign-conversion)
+# -Wno-psabi: GCC notes an ARM ABI change from GCC 7 for std::vector arguments; it does not affect us.
+target_compile_options(webmon PRIVATE -Wall -Wextra -Wshadow -Wconversion -Wno-sign-conversion -Wno-psabi)
 target_link_libraries(webmon PRIVATE Webmon::love Webmon::luajit Webmon::SDL2 Threads::Threads)
 set_target_properties(webmon PROPERTIES
     BUILD_WITH_INSTALL_RPATH ON

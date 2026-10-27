@@ -21,11 +21,15 @@ namespace webmon
 std::string PrepareDataFolder();
 
 /**
- * Asks webOS to deliver the remote's Back and Exit keys to the app, and turns
- * them into Escape for the game (gen1recomp uses Escape for back/menu).
- * Call before LÖVE initialises SDL.
+ * Asks webOS to deliver the remote's Back and Exit keys to the app and maps
+ * the remote onto gen1recomp's keyboard layout: Back/Red = B, OK/Green = A,
+ * Yellow = Select, Blue/0/Play = Start, CH+/CH- = L/R, Exit closes Webmon,
+ * 1 toggles Webmon's info panel. Call before LÖVE initialises SDL.
  */
 void InstallRemoteHandling();
+
+/** Presses of remote key 1 since the last call (the Lua bridge toggles its panel). */
+int TakePanelToggles();
 
 /** Absolute path of the folder holding the running executable (bin/). */
 std::string ExecutableFolder();

@@ -28,10 +28,12 @@ your own ROM.
      same network, enter the PIN and upload or download the `.love`, or
    - copy the `.love` into a folder named `Webmon` on a USB drive.
 3. In the game, **Import ROM** opens Webmon's file picker on the TV. It lists
-   the ROMs you uploaded, the ones in the USB `Webmon/roms` folder, and the ones
-   in RetroArch-style `roms/` folders on any USB drive. Saves work the same way
-   (`Webmon/saves`, RetroArch `saves/`, `.sav` or `.srm`), as do mod zips and
-   carts.
+   the ROMs you uploaded, the ones in the USB `Webmon/roms` folder, and the
+   Pokemon ones in RetroArch-style `roms/` folders on any USB drive (file names
+   with "Pokemon", "Pokémon", "PKMN" or "Pocket Monsters", so a whole collection
+   does not crowd the list; put anything else in `Webmon/roms`). Saves work the
+   same way (`Webmon/saves`, RetroArch `saves/`, `.sav` or `.srm`), as do mod
+   zips and carts.
 
 Press **1** on the remote at any time to show or hide the upload page address
 and PIN (it also shows for a few seconds at start).
@@ -59,10 +61,13 @@ The game's own downloads (mod catalogue, updates) also use the TV's curl.
 
 | Place | Contents |
 |---|---|
-| `<USB>/Webmon/` | the `.love`; `roms/`, `saves/`, `mod-zips/`, `carts/` for the game's import screens; `mods/`, the game's installed mods |
-| `<USB>/roms/`, `<USB>/saves/` | RetroArch-style folders (any capitalisation, up to three levels deep): listed by the picker, never changed |
-| Data folder `game/`, `inbox/` | the same, on TV storage, when there is no USB `Webmon` folder (or you choose TV storage) |
-| Data folder `save/love/pokemon-love2d/` | the game's own saves and settings; its `mods/` links to the USB drive when the drive's `Webmon` folder can be written |
+| `<USB>/Webmon/` | the `.love`; `roms/`, `saves/`, `mod-zips/`, `carts/` for the game's import screens |
+| `<USB>/Webmon/game-data/` | the game's own data: saves, settings, installed mods and its import cache (the decoded graphics and sound of each imported game, the biggest part). Used when the drive can be written; the first time, the data already on the TV is moved there |
+| `<USB>/roms/`, `<USB>/saves/` | RetroArch-style folders (any capitalisation, up to three levels deep): Pokemon titles are listed by the picker, nothing is changed |
+| Data folder `game/`, `inbox/`, `save/` | the same, on TV storage, when there is no writable USB `Webmon` folder (or you choose TV storage) |
+
+Keep the drive plugged in: without it Webmon falls back to the game data on TV
+storage, which is separate.
 
 When the app cannot read a USB drive itself, Webmon uses root (if available) to
 bind-mount the `Webmon` folder into the data folder and to copy picked files.
@@ -73,10 +78,16 @@ The data folder is
 
 ## Controls
 
-The remote's Back and Exit keys act as Escape in the game. Arrows and OK work
-as the keyboard's arrows and Enter; 1 shows the info panel. A game controller
-works as in gen1recomp. In Webmon's picker: Up/Down move, Left/Right page,
-OK (A) chooses, Back (B) cancels.
+A game controller works as in gen1recomp. The TV remote:
+
+| Remote | Game | | Remote | Game |
+|---|---|---|---|---|
+| Arrows | D-pad | | Yellow | Select |
+| OK, Green | A | | Blue, 0, Play | Start |
+| Back, Red | B | | CH+ / CH- | L / R |
+| 1 | Webmon's info panel (upload page address, PIN) | | Exit | Close Webmon |
+
+In Webmon's picker: Up/Down move, Left/Right page, OK chooses, Back cancels.
 
 ## Building
 
@@ -107,9 +118,9 @@ Tests that run without a TV:
 | Part | What it does |
 |---|---|
 | `src/main.cpp` | LÖVE's own `main` (from `src/love.cpp`) plus the webOS start-up; runs the newest `.love` or the setup screen, and again after the game asks LÖVE to restart |
-| `src/webos/Platform.cpp` | Data folder, logs, LÖVE's save folder (`XDG_DATA_HOME`), Back/Exit keys to Escape |
+| `src/webos/Platform.cpp` | Data folder, logs, the remote mapped onto the game's keys, the info panel key |
 | `src/webos/Usb.cpp` | Root detection (Homebrew Channel exec), USB drives, the `Webmon` folder |
-| `src/webos/Library.cpp` | Where files live, linking the USB `Webmon` folder and the game's `mods`, file lists including RetroArch folders |
+| `src/webos/Library.cpp` | Where files live, linking the USB `Webmon` folder, the game's data folder (`XDG_DATA_HOME`), file lists including RetroArch folders |
 | `src/webos/Downloader.cpp` | Downloads gen1recomp releases with the TV's curl |
 | `src/server/WebServer.cpp`, `web/index.html` | The upload page (cpp-httplib) |
 | `src/webos/LuaBridge.cpp`, `src/lua/bridge.lua` | Lua API for the game and setup screen; the file picker gen1recomp asks for (`love.system.pickFile` / `getPickedFile`) and the info panel |

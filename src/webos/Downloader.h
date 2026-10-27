@@ -36,10 +36,12 @@ public:
     static constexpr const char *kReleasesUrl = "https://github.com/bryanthaboi/gen1recomp/releases";
 
     /**
-     * @param incomingFolder where the download is written while it runs
+     * @param workFolder returns the folder the download is written to while it
+     *        runs (asked at the start of each download)
      * @param place moves the finished file into place: (temporary path, file name) -> error or empty
      */
-    Downloader(std::string incomingFolder, std::function<std::string(const std::string &, const std::string &)> place);
+    Downloader(std::function<std::string()> workFolder,
+               std::function<std::string(const std::string &, const std::string &)> place);
     ~Downloader();
 
     Downloader(const Downloader &)            = delete;
@@ -65,7 +67,7 @@ private:
     void Run(std::string url);
     void Finish(bool succeeded, const std::string &message);
 
-    const std::string incomingFolder_;
+    const std::function<std::string()> workFolder_;
     const std::function<std::string(const std::string &, const std::string &)> place_;
 
     mutable std::mutex mutex_;

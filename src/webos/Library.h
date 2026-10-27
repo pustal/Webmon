@@ -10,10 +10,11 @@
  * USB drive (heavier content), "<drive>/Webmon/":
  *   *.love                gen1recomp .love
  *   roms/ saves/ mod-zips/ carts/      as in inbox/
- *   mods/                 the game's installed mods (its own mods folder is linked here)
+ *   game-data/            the game's own data (saves, settings, mods, its import
+ *                         cache), when the drive can be written; else on TV storage
  *
- * The game's file pickers also list ROMs and saves found in RetroArch-style
- * "roms/" and "saves/" folders at the root of any USB drive.
+ * The game's file pickers also list Pokemon ROMs and saves found in
+ * RetroArch-style "roms/" and "saves/" folders at the root of any USB drive.
  */
 #ifndef WEBMON_LIBRARY_H
 #define WEBMON_LIBRARY_H
@@ -63,8 +64,8 @@ public:
     std::string ActiveUsbDrive() const;
     /** True when files can be written into the USB Webmon folder by the app itself. */
     bool UsbWritable() const;
-    /** True when the game's mods folder points at the USB drive. */
-    bool ModsOnUsb() const;
+    /** True when the game's data (XDG_DATA_HOME) is on the USB drive. */
+    bool GameDataOnUsb() const;
 
     /** Every file of @p kind, newest first within each place. */
     std::vector<LibraryFile> List(FileKind kind);
@@ -109,11 +110,15 @@ public:
 
     const std::string &DataFolder() const { return dataFolder_; }
 
-    /** gen1recomp's LÖVE save folder ($XDG_DATA_HOME/love/<identity>). */
-    std::string GameSaveFolder() const;
+    /**
+     * True if @p name looks like a Pokemon game or save ("pokemon", "pokémon",
+     * "pkmn", "pocket monsters", any case). RetroArch folders are filtered
+     * with it, so a whole collection does not crowd the picker.
+     */
+    static bool LooksLikePokemon(const std::string &name);
 
 private:
-    void LinkGameMods();
+    void PlaceGameData();
     void AddFolder(std::vector<LibraryFile> &out, FileKind kind, const std::string &folder, const std::string &source,
                    bool removable);
     void AddRetroArch(std::vector<LibraryFile> &out, FileKind kind);
@@ -125,7 +130,7 @@ private:
     UsbLink usbLink_ = UsbLink::None;
     std::string usbDrive_;
     bool usbWritable_ = false;
-    bool modsOnUsb_   = false;
+    bool gameDataOnUsb_ = false;
 };
 
 } // namespace webmon

@@ -8,11 +8,14 @@
 --    (uploaded through the upload page), the USB Webmon folder, and for ROMs
 --    and saves RetroArch-style roms/ and saves/ folders on USB drives.
 -- 2. Info panel. Remote key 1 shows or hides the upload page address and PIN
---    (also shown for a few seconds at start).
+--    (also shown for a few seconds at start). The key is caught by the
+--    launcher's SDL filter (webmon.takePanelToggles), so the game never sees it.
 --
--- Both need love.system and the game's callbacks, so the global require is
--- wrapped: the picker is installed just before "main" is required and the
--- callbacks are wrapped just after (main.lua defines them at load time).
+-- The picker needs love.system, so the global require is wrapped and the
+-- picker installed just before "main" is required. Drawing hooks
+-- love.graphics.present, which every frame calls whatever the game does with
+-- love.draw; the input callbacks are wrapped after main.lua loads and
+-- re-wrapped whenever the game replaces them.
 
 local webmon = webmon
 local originalRequire = require
@@ -25,8 +28,8 @@ local KINDS = {
   cart = "Choose a cart (.g1rcart)",
 }
 local KIND_FOLDERS = {
-  rom = "Webmon/roms (or a RetroArch roms folder)",
-  sav = "Webmon/saves (or a RetroArch saves folder)",
+  rom = "Webmon/roms (or, for Pokemon titles, a RetroArch roms folder)",
+  sav = "Webmon/saves (or, for Pokemon titles, a RetroArch saves folder)",
   mod = "Webmon/mod-zips",
   cart = "Webmon/carts",
 }
@@ -196,7 +199,8 @@ local function drawPicker()
   love.graphics.setFont(smallFont)
   love.graphics.setColor(0.6, 0.63, 0.75)
   love.graphics.print(serverLine(), x + pad, y + h - pad - math.floor(64 * s))
-  love.graphics.print("OK: choose    Back: cancel    Up/Down: move", x + pad, y + h - pad - math.floor(30 * s))
+  love.graphics.print("OK: choose    Back: cancel    Up/Down: move    Left/Right: page", x + pad,
+    y + h - pad - math.floor(30 * s))
 end
 
 local function drawPanel()
@@ -205,15 +209,17 @@ local function drawPanel()
   local status = webmon.status()
   local lines = { serverLine() }
   if status.usbDrive ~= "" then
-    lines[#lines + 1] = "USB: " .. status.usbDrive .. "/Webmon" .. (status.modsOnUsb and " (mods stored there)" or "")
+    lines[#lines + 1] = "USB: " .. status.usbDrive .. "/Webmon"
+      .. (status.gameDataOnUsb and " (game data stored there)" or " (game data on the TV)")
   else
     lines[#lines + 1] = "USB: no Webmon folder (create one on the upload page)"
   end
   if status.restart then
     lines[#lines + 1] = "New files received: restart Webmon to use them"
   end
+  lines[#lines + 1] = "Remote: Back/Red = B, Green = A, Yellow = Select, Blue/0 = Start, CH+/CH- = L/R"
+  lines[#lines + 1] = "Exit: close Webmon    1: show or hide this panel"
   lines[#lines + 1] = "Help and updates: github.com/pustal/Webmon"
-  lines[#lines + 1] = "Press 1 (remote) to show or hide"
 
   local textFont = font(math.floor(24 * s))
   local pad = math.floor(18 * s)
@@ -253,8 +259,8 @@ local function pickerKey(key)
   elseif key == "down" then movePicker(1)
   elseif key == "pageup" or key == "left" then movePicker(-VISIBLE_ROWS)
   elseif key == "pagedown" or key == "right" then movePicker(VISIBLE_ROWS)
-  elseif key == "return" or key == "kpenter" or key == "space" then choose()
-  elseif key == "escape" or key == "backspace" then closePicker()
+  elseif key == "return" or key == "kpenter" or key == "space" or key == "z" then choose()
+  elseif key == "escape" or key == "backspace" or key == "x" then closePicker()
   end
 end
 
@@ -268,72 +274,78 @@ local function pickerButton(button)
   end
 end
 
--- Remote key 1 toggles the panel, except while the game takes text input.
-local function isPanelKey(key)
-  return key == "1" and not (love.keyboard.hasTextInput and love.keyboard.hasTextInput())
-end
-
 -- ---- Wrapping the game's callbacks -----------------------------------------------
 
-local function wrapCallbacks()
-  local game = {
-    update = love.update,
-    draw = love.draw,
-    keypressed = love.keypressed,
-    keyreleased = love.keyreleased,
-    textinput = love.textinput,
-    gamepadpressed = love.gamepadpressed,
-    gamepadreleased = love.gamepadreleased,
-  }
+-- Per-frame work, from the love.graphics.present hook: timers, the panel key,
+-- re-wrapping replaced callbacks, and drawing over the finished frame.
+local lastFrame = nil
+local wrapInput -- defined below
 
-  love.update = function(dt, ...)
-    if picker.open then
-      picker.refreshIn = picker.refreshIn - dt
-      if picker.refreshIn <= 0 then refreshPicker() end
-    end
-    if panel.hideIn then
-      panel.hideIn = panel.hideIn - dt
-      if panel.hideIn <= 0 then
-        panel.visible = false
-        panel.hideIn = nil
-      end
-    end
-    if game.update then return game.update(dt, ...) end
+local function beforePresent()
+  local now = love.timer and love.timer.getTime() or 0
+  local dt = lastFrame and (now - lastFrame) or 0
+  lastFrame = now
+
+  if picker.open then
+    picker.refreshIn = picker.refreshIn - dt
+    if picker.refreshIn <= 0 then refreshPicker() end
   end
-
-  love.draw = function(...)
-    if game.draw then game.draw(...) end
-    drawOverlays()
-  end
-
-  love.keypressed = function(key, ...)
-    if picker.open then return pickerKey(key) end
-    if isPanelKey(key) then
-      panel.visible = not panel.visible
+  if panel.hideIn then
+    panel.hideIn = panel.hideIn - dt
+    if panel.hideIn <= 0 then
+      panel.visible = false
       panel.hideIn = nil
-      return
     end
+  end
+  if webmon.takePanelToggles() % 2 == 1 then
+    panel.visible = not panel.visible
+    panel.hideIn = nil
+  end
+  wrapInput()
+  drawOverlays()
+end
+
+-- Input callbacks: while the picker is open it takes the input, otherwise the
+-- game's own function runs. game[name] is the game's current function.
+local game = {}
+local wrappers = {
+  keypressed = function(key, ...)
+    if picker.open then return pickerKey(key) end
     if game.keypressed then return game.keypressed(key, ...) end
-  end
-
-  love.keyreleased = function(key, ...)
-    if picker.open or isPanelKey(key) then return end
-    if game.keyreleased then return game.keyreleased(key, ...) end
-  end
-
-  love.textinput = function(text, ...)
+  end,
+  keyreleased = function(...)
     if picker.open then return end
-    if game.textinput then return game.textinput(text, ...) end
-  end
-
-  love.gamepadpressed = function(joystick, button, ...)
+    if game.keyreleased then return game.keyreleased(...) end
+  end,
+  textinput = function(...)
+    if picker.open then return end
+    if game.textinput then return game.textinput(...) end
+  end,
+  gamepadpressed = function(joystick, button, ...)
     if picker.open then return pickerButton(button) end
     if game.gamepadpressed then return game.gamepadpressed(joystick, button, ...) end
-  end
-
-  love.gamepadreleased = function(joystick, button, ...)
+  end,
+  gamepadreleased = function(...)
     if picker.open then return end
-    if game.gamepadreleased then return game.gamepadreleased(joystick, button, ...) end
+    if game.gamepadreleased then return game.gamepadreleased(...) end
+  end,
+}
+
+-- (Re-)installs the wrappers; a callback the game assigned since becomes game[name].
+wrapInput = function()
+  for name, wrapper in pairs(wrappers) do
+    if love[name] ~= wrapper then
+      game[name] = love[name]
+      love[name] = wrapper
+    end
+  end
+end
+
+local function hookPresent()
+  local present = love.graphics.present
+  love.graphics.present = function(...)
+    beforePresent()
+    return present(...)
   end
 end
 
@@ -348,6 +360,7 @@ require = function(name, ...)
   require = originalRequire
   if love.system then installPicker() end
   local result = originalRequire(name, ...)
-  wrapCallbacks()
+  wrapInput()
+  if love.graphics then hookPresent() end
   return result
 end

@@ -7,16 +7,18 @@
  *   webmon.readable(path)      -> a path the game can open (a root copy if needed), or nil
  *   webmon.server()            -> address ("http://..." or ""), pin
  *   webmon.setPendingPick(k)   -> tells the upload page which file the game waits for (nil: none)
- *   webmon.status()            -> { usbDrive=, usbWritable=, modsOnUsb=, root=, curl=, restart=,
+ *   webmon.status()            -> { usbDrive=, usbWritable=, gameDataOnUsb=, curl=, restart=,
  *                                   download={active=, succeeded=, file=, received=, total=, message=} }
  *   webmon.downloadLatest()    -> true if a download of the latest .love started
  *   webmon.dataFolder()        -> the app's data folder
+ *   webmon.takePanelToggles()  -> presses of remote key 1 since the last call
  */
 #include "LuaBridge.h"
 
 #include "BridgeScript.generated.h"
 #include "Downloader.h"
 #include "Library.h"
+#include "Platform.h"
 #include "server/WebServer.h"
 
 extern "C" {
@@ -102,7 +104,7 @@ int LuaStatus(lua_State *L)
     lua_createtable(L, 0, 8);
     SetString(L, "usbDrive", g_context.library->ActiveUsbDrive());
     SetBool(L, "usbWritable", g_context.library->UsbWritable());
-    SetBool(L, "modsOnUsb", g_context.library->ModsOnUsb());
+    SetBool(L, "gameDataOnUsb", g_context.library->GameDataOnUsb());
     SetBool(L, "curl", !Downloader::CurlPath().empty());
     SetBool(L, "restart", g_context.server && g_context.server->RestartSuggested());
     lua_createtable(L, 0, 6);
@@ -126,6 +128,12 @@ int LuaDataFolder(lua_State *L)
 {
     const std::string &folder = g_context.library->DataFolder();
     lua_pushlstring(L, folder.data(), folder.size());
+    return 1;
+}
+
+int LuaTakePanelToggles(lua_State *L)
+{
+    lua_pushinteger(L, TakePanelToggles());
     return 1;
 }
 
@@ -154,6 +162,7 @@ void InstallLuaBridge(lua_State *L, const BridgeContext &context)
         { "status", LuaStatus },
         { "downloadLatest", LuaDownloadLatest },
         { "dataFolder", LuaDataFolder },
+        { "takePanelToggles", LuaTakePanelToggles },
         { nullptr, nullptr },
     };
     lua_newtable(L);

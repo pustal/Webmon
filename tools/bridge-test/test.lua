@@ -8,9 +8,17 @@ webmon = {
   readable = function(p) return p == "/usb/B.gb" and "/copy/B.gb" or nil end,
   server = function() return "http://1.2.3.4:47811", "1234" end,
   setPendingPick = function(k) pending = k end,
-  status = function() return { usbDrive = "", modsOnUsb = false, restart = false } end,
+  status = function() return { usbDrive = "", gameDataOnUsb = false, restart = false } end,
+  takePanelToggles = function() return 0 end,
 }
-love = { system = {}, keyboard = { hasTextInput = function() return false end } }
+-- Drawing calls do nothing; the few that return values return plausible ones.
+local graphics = setmetatable({
+  present = function() end,
+  getDimensions = function() return 1920, 1080 end,
+  newFont = function() return { getWidth = function(_, text) return #text * 10 end } end,
+}, { __index = function() return function() end end })
+love = { system = {}, keyboard = { hasTextInput = function() return false end },
+         graphics = graphics, timer = { getTime = function() return 0 end } }
 local gameKeys = {}
 package.preload.main = function()
   function love.keypressed(k) gameKeys[#gameKeys + 1] = k end
@@ -27,9 +35,15 @@ assert(love.system.getPickedFile() == "/copy/B.gb", "picked path")
 assert(love.system.getPickedFile() == nil, "consumed once")
 assert(pending == nil, "page told the pick is over")
 assert(#gameKeys == 0, "game must not see picker keys")
-love.keypressed("1")             -- panel toggle, not for the game
 love.keypressed("x")
 assert(#gameKeys == 1 and gameKeys[1] == "x")
+-- The game replacing its callback must not lose the picker's input.
+love.keypressed = function(k) gameKeys[#gameKeys + 1] = "new:" .. k end
+love.graphics.present()          -- re-wraps
+assert(love.system.pickFile("rom")); love.keypressed("x")      -- cancels, game sees nothing
+assert(#gameKeys == 1 and love.system.getPickedFile() == nil)
+love.keypressed("up")
+assert(gameKeys[2] == "new:up", "the game's new callback runs")
 assert(love.system.pickFile("rom")); love.keypressed("return")   -- A.gb is unreadable
 assert(love.system.getPickedFile() == nil and love.system.getPickError():find("A.gb"))
 assert(love.system.pickFile("bogus") == false)

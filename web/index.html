@@ -220,7 +220,7 @@ async function refreshStatus() {
   const usb = status.usb.link === "none"
     ? "Not in use (create a Webmon folder on a drive below)."
     : status.usb.drive + "/Webmon (" + (status.usb.link === "bind" ? "through root" : "direct") + ", "
-      + (status.usb.writable ? "writable" : "read-only") + ")" + (status.usb.modsOnUsb ? ", game mods stored there" : "");
+      + (status.usb.writable ? "writable" : "read-only") + ")" + (status.usb.gameDataOnUsb ? ", game data (saves, mods, cache) stored there" : "");
   addRow(table, "USB storage", usb, status.usb.link === "none" ? "muted" : "ok");
 
   const drives = $("drives-table");

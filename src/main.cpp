@@ -139,10 +139,16 @@ int main(int argc, char **argv)
     usb.ProbeRoot();
     webmon::Library library(dataFolder, usb);
     library.Prepare();
-    webmon::Downloader downloader(library.IncomingFolder(), [&library](const std::string &temporary,
-                                                                       const std::string &name) {
-        return library.Place(temporary, library.UploadFolder(webmon::FileKind::Love, true), name);
-    });
+    // Downloads go straight to where the game file is kept (the USB Webmon folder when it
+    // can be written), so a big release never has to fit on the TV's own storage first.
+    webmon::Downloader downloader(
+        [&library] {
+            const std::string folder = library.UploadFolder(webmon::FileKind::Love, true);
+            return webmon::Usb::CanWrite(folder) ? folder : library.IncomingFolder();
+        },
+        [&library](const std::string &temporary, const std::string &name) {
+            return library.Place(temporary, library.UploadFolder(webmon::FileKind::Love, true), name);
+        });
     webmon::WebServer server(library, usb, downloader, webmon::WebServer::LoadOrCreatePin(dataFolder),
                              WEBMON_VERSION);
     if (!server.Start())

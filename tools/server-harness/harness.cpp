@@ -36,9 +36,14 @@ int main(int argc, char **argv)
     usb.ProbeRoot();
     webmon::Library library(data, usb);
     library.Prepare();
-    webmon::Downloader downloader(library.IncomingFolder(), [&library](const std::string &tmp, const std::string &name) {
-        return library.Place(tmp, library.UploadFolder(webmon::FileKind::Love, true), name);
-    });
+    webmon::Downloader downloader(
+        [&library] {
+            const std::string folder = library.UploadFolder(webmon::FileKind::Love, true);
+            return webmon::Usb::CanWrite(folder) ? folder : library.IncomingFolder();
+        },
+        [&library](const std::string &tmp, const std::string &name) {
+            return library.Place(tmp, library.UploadFolder(webmon::FileKind::Love, true), name);
+        });
     webmon::WebServer server(library, usb, downloader, webmon::WebServer::LoadOrCreatePin(data), "harness");
     if (!server.Start())
         return 1;

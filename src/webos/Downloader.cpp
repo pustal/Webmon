@@ -66,9 +66,9 @@ bool IsSafeTag(const std::string &tag)
 
 } // namespace
 
-Downloader::Downloader(std::string incomingFolder,
+Downloader::Downloader(std::function<std::string()> workFolder,
                        std::function<std::string(const std::string &, const std::string &)> place)
-    : incomingFolder_(std::move(incomingFolder)), place_(std::move(place))
+    : workFolder_(std::move(workFolder)), place_(std::move(place))
 {
 }
 
@@ -163,7 +163,7 @@ void Downloader::Run(std::string url)
     }
 
     const std::string name      = url.substr(url.rfind('/') + 1);
-    const std::string temporary = incomingFolder_ + "/" + name + ".part";
+    const std::string temporary = workFolder_() + "/." + name + ".part";
     std::string headers;
     RunProcess({ curl, "-sSIL", "-A", kUserAgent, url }, &headers);
     {

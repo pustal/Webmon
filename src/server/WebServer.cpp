@@ -20,7 +20,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <random>
@@ -76,25 +78,36 @@ std::uint64_t FreeBytes(const std::string &path)
 
 /**
  * Streams the request body into @p path, refusing more than @p expected
- * bytes, and flushes it to storage. @return True if all of it was written.
+ * bytes, and flushes it to storage.
+ * @return Empty on success, otherwise what went wrong (with the system's reason).
  */
-bool StreamBodyToFile(const httplib::ContentReader &reader, const std::string &path, std::uint64_t expected)
+std::string StreamBodyToFile(const httplib::ContentReader &reader, const std::string &path, std::uint64_t expected)
 {
     std::FILE *out = std::fopen(path.c_str(), "wb");
     if (!out)
-        return false;
+        return std::string("cannot create the file (") + std::strerror(errno) + ")";
     std::uint64_t written = 0;
+    int writeError        = 0;
     const bool completed  = reader([&](const char *data, std::size_t length) {
         if (written + length > expected)
             return false;
-        if (std::fwrite(data, 1, length, out) != length)
+        if (std::fwrite(data, 1, length, out) != length) {
+            writeError = errno;
             return false;
+        }
         written += length;
         return true;
     });
     const bool flushed = std::fflush(out) == 0 && fsync(fileno(out)) == 0;
+    const int flushError = flushed ? 0 : errno;
     std::fclose(out);
-    return completed && flushed && written == expected;
+    if (writeError != 0)
+        return std::string("writing failed (") + std::strerror(writeError) + ")";
+    if (!completed || written != expected)
+        return "the upload was interrupted (" + std::to_string(written) + " of " + std::to_string(expected) + " bytes)";
+    if (!flushed)
+        return std::string("saving failed (") + std::strerror(flushError) + ")";
+    return std::string();
 }
 
 const char *UsbLinkName(UsbLink link)
@@ -215,7 +228,7 @@ std::string WebServer::StatusJson()
         << "}"
         << ",\"usb\":{\"link\":\"" << UsbLinkName(library_.ActiveUsbLink()) << "\",\"drive\":"
         << json::Quote(library_.ActiveUsbDrive()) << ",\"writable\":" << json::Bool(library_.UsbWritable())
-        << ",\"modsOnUsb\":" << json::Bool(library_.ModsOnUsb()) << "}"
+        << ",\"gameDataOnUsb\":" << json::Bool(library_.GameDataOnUsb()) << "}"
         << ",\"drives\":[";
     bool first = true;
     for (const UsbDrive &drive : usb_.ListDrives()) {
@@ -288,12 +301,18 @@ void WebServer::RegisterRoutes()
             Fail(res, 411, "The upload needs a size between 1 byte and 512 MB.");
             return;
         }
-        const bool preferUsb       = req.get_param_value("dest") != "tv";
-        const std::string folder   = library_.UploadFolder(kind, preferUsb);
-        const std::string temporary = library_.IncomingFolder() + "/" + name + ".part";
-        if (!StreamBodyToFile(reader, temporary, size)) {
+        const bool preferUsb     = req.get_param_value("dest") != "tv";
+        const std::string folder = library_.UploadFolder(kind, preferUsb);
+        // Straight into the destination when the app can write there; otherwise into TV
+        // storage first, and root moves it (a drive the app can only reach through root).
+        const bool direct = Usb::CanWrite(folder);
+        const std::string temporary = direct ? folder + "/." + name + ".part" : library_.IncomingFolder() + "/" + name + ".part";
+        const std::string streamError = StreamBodyToFile(reader, temporary, size);
+        if (!streamError.empty()) {
             unlink(temporary.c_str());
-            Fail(res, 500, "The file could not be stored (is the storage full?).");
+            const std::string where = direct ? folder : "TV storage (on its way to " + folder + ")";
+            std::fprintf(stderr, "[Webmon] upload of %s to %s: %s\n", name.c_str(), where.c_str(), streamError.c_str());
+            Fail(res, 500, "Could not store " + name + " in " + where + ": " + streamError + ".");
             return;
         }
         const std::string error = library_.Place(temporary, folder, name);
