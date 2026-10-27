@@ -1,0 +1,15 @@
+{
+    "id": "@WEBMON_APP_ID@",
+    "version": "@PROJECT_VERSION@",
+    "vendor": "Webmon",
+    "type": "native",
+    "main": "bin/webmon",
+    "title": "Webmon",
+    "icon": "icon.png",
+    "largeIcon": "largeIcon.png",
+    "iconColor": "#c0392b",
+    "appDescription": "Runs gen1recomp on webOS. Bring the game's .love release and your own ROM.",
+    "supportTouchMode": "none",
+    "useAllMouseButtons": false,
+    "requiredACG": []
+}
