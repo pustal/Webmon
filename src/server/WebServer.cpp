@@ -9,6 +9,8 @@
 #include "webos/Json.h"
 #include "webos/Library.h"
 #include "webos/NetInfo.h"
+#include "webos/Memory.h"
+#include "webos/Swap.h"
 #include "webos/Usb.h"
 
 // Four workers: the page uploads one file at a time and polls the status alongside.
@@ -139,8 +141,9 @@ std::string WebServer::LoadOrCreatePin(const std::string &dataFolder)
     return buffer;
 }
 
-WebServer::WebServer(Library &library, Usb &usb, Downloader &downloader, std::string pin, std::string version)
-    : library_(library), usb_(usb), downloader_(downloader), pin_(std::move(pin)), version_(std::move(version))
+WebServer::WebServer(Library &library, Usb &usb, Downloader &downloader, Swap &swap, std::string pin,
+                     std::string version)
+    : library_(library), usb_(usb), downloader_(downloader), swap_(swap), pin_(std::move(pin)), version_(std::move(version))
 {
 }
 
@@ -202,6 +205,8 @@ std::string WebServer::StatusJson()
 {
     const RootStatus root = usb_.Root();
     const DownloadStatus download = downloader_.Status();
+    const SwapStatus swap         = swap_.Status();
+    const MemoryInfo memory       = ReadMemory();
     const std::vector<LibraryFile> games = library_.List(FileKind::Love);
     std::string pendingPick;
     std::string lastEvent;
@@ -214,6 +219,11 @@ std::string WebServer::StatusJson()
     std::ostringstream out;
     out << "{\"version\":" << json::Quote(version_)
         << ",\"tvFreeBytes\":" << FreeBytes(library_.DataFolder())
+        << ",\"memory\":{\"processMb\":" << memory.processMb << ",\"availableMb\":" << memory.availableMb
+        << ",\"totalMb\":" << memory.totalMb << ",\"swapFreeMb\":" << memory.swapFreeMb << "}"
+        << ",\"swap\":{\"possible\":" << json::Bool(swap.possible) << ",\"exists\":" << json::Bool(swap.exists)
+        << ",\"active\":" << json::Bool(swap.active) << ",\"busy\":" << json::Bool(swap.busy)
+        << ",\"sizeMb\":" << swap.sizeMb << ",\"message\":" << json::Quote(swap.message) << "}"
         << ",\"game\":" << (games.empty() ? "null" : "{\"name\":" + json::Quote(games[0].name) +
                                                          ",\"source\":" + json::Quote(games[0].source) + "}")
         << ",\"restartSuggested\":" << json::Bool(restartSuggested_.load())
@@ -360,15 +370,41 @@ void WebServer::RegisterRoutes()
             Fail(res, 400, "That is not a mounted USB drive.");
             return;
         }
-        std::string error = usb_.CreateWebmonFolder(mount, { "roms", "saves", "mod-zips", "carts", "mods" });
+        std::string error = usb_.CreateWebmonFolder(mount, { "roms", "saves", "mod-zips", "carts", "game-data" });
         if (error.empty())
             error = library_.LinkUsb();
+        if (error.empty())
+            swap_.UseDrive(library_.ActiveUsbDrive());
         if (!error.empty()) {
             Fail(res, 500, error);
             return;
         }
         restartSuggested_.store(true);
-        Ok(res, "Webmon folder ready. Restart Webmon so the game keeps its mods there.");
+        Ok(res, "Webmon folder ready. Restart Webmon so the game keeps its data there.");
+    });
+
+    server.Post("/api/swap", [this](const httplib::Request &req, httplib::Response &res) {
+        std::uint32_t size = 0;
+        try {
+            size = static_cast<std::uint32_t>(std::stoul(req.get_param_value("size")));
+        } catch (const std::exception &) {
+            size = 0;
+        }
+        if (!swap_.Create(size)) {
+            Fail(res, 409, "A swap file needs root, the USB Webmon folder and a size of " +
+                               std::to_string(Swap::kMinSizeMb) + "-" + std::to_string(Swap::kMaxSizeMb) +
+                               " MB (or one is being made).");
+            return;
+        }
+        Ok(res, "Creating the swap file.");
+    });
+
+    server.Delete("/api/swap", [this](const httplib::Request &, httplib::Response &res) {
+        if (!swap_.Remove()) {
+            Fail(res, 409, "There is no swap file to remove, or it is busy.");
+            return;
+        }
+        Ok(res, "Removing the swap file.");
     });
 }
 

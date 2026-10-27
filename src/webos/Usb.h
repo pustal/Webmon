@@ -67,11 +67,16 @@ public:
      */
     std::string CreateWebmonFolder(const std::string &mountPoint, const std::vector<std::string> &subFolders);
 
+    /** Default limit for a root command run through the Homebrew Channel. */
+    static constexpr int kDefaultRootTimeoutMs = 60000;
+
     /**
      * Runs @p command with /bin/sh as root (directly or through the Homebrew
-     * Channel). @p output receives stdout. @return True if it exited with 0.
+     * Channel, waiting at most @p timeoutMs). @p output receives stdout.
+     * @return True if it exited with 0.
      */
-    bool RunAsRoot(const std::string &command, std::string *output = nullptr);
+    bool RunAsRoot(const std::string &command, std::string *output = nullptr,
+                   int timeoutMs = kDefaultRootTimeoutMs);
 
     /** @p text quoted for /bin/sh. */
     static std::string ShellQuote(const std::string &text);

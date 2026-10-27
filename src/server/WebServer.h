@@ -18,6 +18,8 @@
  *   DELETE /api/files?path=<path from /api/files>
  *   POST   /api/download[?url=<release asset>]      no url: the latest release
  *   POST   /api/usb/webmon?mount=<mount point>
+ *   POST   /api/swap?size=<MB>                      create a swap file on the USB drive (root)
+ *   DELETE /api/swap                                remove it
  */
 #ifndef WEBMON_WEB_SERVER_H
 #define WEBMON_WEB_SERVER_H
@@ -39,6 +41,7 @@ namespace webmon
 
 class Downloader;
 class Library;
+class Swap;
 class Usb;
 
 class WebServer
@@ -47,7 +50,7 @@ public:
     /** Port tried first (the Animal Crossing port uses 47811 too; only one app runs at a time). */
     static constexpr std::uint16_t kPreferredPort = 47811;
 
-    WebServer(Library &library, Usb &usb, Downloader &downloader, std::string pin, std::string version);
+    WebServer(Library &library, Usb &usb, Downloader &downloader, Swap &swap, std::string pin, std::string version);
     ~WebServer();
 
     WebServer(const WebServer &)            = delete;
@@ -86,6 +89,7 @@ private:
     Library &library_;
     Usb &usb_;
     Downloader &downloader_;
+    Swap &swap_;
     const std::string pin_;
     const std::string version_;
 

@@ -20,7 +20,9 @@
 #include "webos/Downloader.h"
 #include "webos/Library.h"
 #include "webos/LuaBridge.h"
+#include "webos/Memory.h"
 #include "webos/Platform.h"
+#include "webos/Swap.h"
 #include "webos/Usb.h"
 
 #include "common/runtime.h"
@@ -149,8 +151,13 @@ int main(int argc, char **argv)
         [&library](const std::string &temporary, const std::string &name) {
             return library.Place(temporary, library.UploadFolder(webmon::FileKind::Love, true), name);
         });
-    webmon::WebServer server(library, usb, downloader, webmon::WebServer::LoadOrCreatePin(dataFolder),
+    webmon::Swap swap(usb);
+    swap.UseDrive(library.ActiveUsbDrive());
+    webmon::WebServer server(library, usb, downloader, swap, webmon::WebServer::LoadOrCreatePin(dataFolder),
                              WEBMON_VERSION);
+    const webmon::MemoryInfo memory = webmon::ReadMemory();
+    std::printf("[Webmon] memory: TV %u MB, available %u MB, free swap %u MB\n", memory.totalMb, memory.availableMb,
+                memory.swapFreeMb);
     if (!server.Start())
         std::fprintf(stderr, "[Webmon] the upload page could not start (no free port)\n");
     const webmon::BridgeContext bridge{ &library, &server, &downloader };
@@ -177,5 +184,6 @@ int main(int argc, char **argv)
     } while (done == DoneAction::Restart);
 
     server.Stop();
+    swap.Deactivate();
     return exitCode;
 }

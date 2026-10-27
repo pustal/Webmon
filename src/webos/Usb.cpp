@@ -182,7 +182,7 @@ RootStatus Usb::Root() const
     return root_;
 }
 
-bool Usb::RunAsRoot(const std::string &command, std::string *output)
+bool Usb::RunAsRoot(const std::string &command, std::string *output, int timeoutMs)
 {
     const RootStatus status = Root();
     if (status.runningAsRoot)
@@ -196,7 +196,8 @@ bool Usb::RunAsRoot(const std::string &command, std::string *output)
     // The exec method reports success through returnValue; the marker tells us the command's own status.
     const std::string wrapped = "(" + command + ") && echo " + kOkMarker;
     std::string reply;
-    RunProcess({ luna, "-n", "1", "-w", "60000", kHbChannelExec, "{\"command\":" + json::Quote(wrapped) + "}" },
+    RunProcess({ luna, "-n", "1", "-w", std::to_string(timeoutMs), kHbChannelExec,
+                 "{\"command\":" + json::Quote(wrapped) + "}" },
                &reply);
 
     std::string stdoutText;

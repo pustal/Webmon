@@ -40,6 +40,8 @@ and PIN (it also shows for a few seconds at start).
 
 ## The upload page
 
+<img src="docs/images/web-page.png" alt="The upload page" width="420" align="right">
+
 Port 47811 (or the next free one). It only answers devices on your home
 network that send the PIN. It shows:
 
@@ -50,6 +52,7 @@ network that send the PIN. It shows:
   folder on a drive;
 - **The game**: download the latest release, or any listed release, onto the
   TV, or download it to your computer;
+- **Memory for heavy mods**: the TV's memory, and an optional swap file (below);
 - **Files**: upload, list and delete the game, ROMs, saves, mod zips and carts,
   to TV storage or the USB `Webmon` folder. While the game's picker is open the
   page says what it is waiting for, and new uploads appear in the picker by
@@ -75,6 +78,26 @@ bind-mount the `Webmon` folder into the data folder and to copy picked files.
 The data folder is
 `/media/developer/apps/usr/palm/applications/org.webmon.app/data`, with
 `stdout.log` and `stderr.log`. It survives app updates but not uninstalling.
+
+## Memory and heavy mods
+
+webOS restarts the app when the TV runs short of free memory. Big mods can get
+there: a voxel world mod (such as PotatoVoxel) building its map cache creates a
+lot of 3D data at once. Webmon helps in two ways:
+
+- **Prompt clean-up.** LÖVE objects (meshes, image data) hold memory that Lua's
+  garbage collector does not see, so it would wait too long to free them.
+  Webmon checks the process size every second and runs a full clean-up after
+  it grows by 48 MB, or when the TV has less than 160 MB available. The log
+  (`stdout.log`) records each clean-up and every new peak.
+- **A swap file (root, optional).** The upload page can create a swap file of
+  512 MB to 2 GB in the USB `Webmon` folder. Webmon switches it on whenever it
+  runs and off when it closes. Flash drives are slow and wear with writing, so
+  use it only if a mod needs it; FAT32 and ext4 drives work.
+
+If the app is restarted in the middle of a cache build, choose the mod's
+prebuild again: PotatoVoxel resumes where it stopped. A lower quality preset
+(LOW or POTATO) also needs less memory.
 
 ## Controls
 
@@ -122,6 +145,7 @@ Tests that run without a TV:
 | `src/webos/Usb.cpp` | Root detection (Homebrew Channel exec), USB drives, the `Webmon` folder |
 | `src/webos/Library.cpp` | Where files live, linking the USB `Webmon` folder, the game's data folder (`XDG_DATA_HOME`), file lists including RetroArch folders |
 | `src/webos/Downloader.cpp` | Downloads gen1recomp releases with the TV's curl |
+| `src/webos/Memory.cpp`, `src/webos/Swap.cpp` | Memory figures; the optional USB swap file (root) |
 | `src/server/WebServer.cpp`, `web/index.html` | The upload page (cpp-httplib) |
 | `src/webos/LuaBridge.cpp`, `src/lua/bridge.lua` | Lua API for the game and setup screen; the file picker gen1recomp asks for (`love.system.pickFile` / `getPickedFile`) and the info panel |
 | `setup/` | The setup screen (Lua) |

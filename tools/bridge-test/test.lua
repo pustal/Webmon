@@ -10,6 +10,7 @@ webmon = {
   setPendingPick = function(k) pending = k end,
   status = function() return { usbDrive = "", gameDataOnUsb = false, restart = false } end,
   takePanelToggles = function() return 0 end,
+  memory = function() return 100, 900 end,
 }
 -- Drawing calls do nothing; the few that return values return plausible ones.
 local graphics = setmetatable({

@@ -12,12 +12,14 @@
  *   webmon.downloadLatest()    -> true if a download of the latest .love started
  *   webmon.dataFolder()        -> the app's data folder
  *   webmon.takePanelToggles()  -> presses of remote key 1 since the last call
+ *   webmon.memory()            -> this process's MB in RAM, MB the TV still has available
  */
 #include "LuaBridge.h"
 
 #include "BridgeScript.generated.h"
 #include "Downloader.h"
 #include "Library.h"
+#include "Memory.h"
 #include "Platform.h"
 #include "server/WebServer.h"
 
@@ -137,6 +139,14 @@ int LuaTakePanelToggles(lua_State *L)
     return 1;
 }
 
+int LuaMemory(lua_State *L)
+{
+    const MemoryInfo memory = ReadMemory();
+    lua_pushinteger(L, static_cast<lua_Integer>(memory.processMb));
+    lua_pushinteger(L, static_cast<lua_Integer>(memory.availableMb));
+    return 2;
+}
+
 /** Loads bridge.lua and leaves its install function on the stack. @return False on a syntax error. */
 bool PushBridgeScript(lua_State *L)
 {
@@ -163,6 +173,7 @@ void InstallLuaBridge(lua_State *L, const BridgeContext &context)
         { "downloadLatest", LuaDownloadLatest },
         { "dataFolder", LuaDataFolder },
         { "takePanelToggles", LuaTakePanelToggles },
+        { "memory", LuaMemory },
         { nullptr, nullptr },
     };
     lua_newtable(L);

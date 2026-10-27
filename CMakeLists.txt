@@ -7,7 +7,7 @@
 # or scripts/build-webos.sh for both.
 
 cmake_minimum_required(VERSION 3.21)
-project(Webmon VERSION 0.2.1 LANGUAGES C CXX)
+project(Webmon VERSION 0.3.0 LANGUAGES C CXX)
 
 set(WEBMON_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${WEBMON_ROOT}/cmake")
@@ -64,9 +64,11 @@ add_executable(webmon
     src/webos/Json.cpp
     src/webos/Library.cpp
     src/webos/LuaBridge.cpp
+    src/webos/Memory.cpp
     src/webos/NetInfo.cpp
     src/webos/Platform.cpp
     src/webos/Process.cpp
+    src/webos/Swap.cpp
     src/webos/Usb.cpp
     "${WEBMON_GENERATED_DIR}/WebPage.generated.h"
     "${WEBMON_GENERATED_DIR}/BridgeScript.generated.h"

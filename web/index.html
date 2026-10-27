@@ -83,6 +83,24 @@
     </section>
 
     <section>
+      <h2>Memory for heavy mods</h2>
+      <p class="muted">webOS restarts the app when the TV runs out of free memory, which big mods (voxel worlds
+        building their cache) can cause. With root, a <b>swap file</b> in the USB Webmon folder gives the TV room to
+        spare. It is switched on whenever Webmon runs. Flash drives are slow and wear with writing, so only use it if
+        you need it; FAT32 and ext4 drives work.</p>
+      <p id="swap-line"></p>
+      <div class="row" id="swap-controls">
+        <select id="swap-size">
+          <option value="512">512 MB</option>
+          <option value="1024" selected>1 GB</option>
+          <option value="2048">2 GB</option>
+        </select>
+        <button id="swap-create">Create swap file</button>
+        <button id="swap-remove" class="secondary">Remove swap file</button>
+      </div>
+    </section>
+
+    <section>
       <h2>The game (gen1recomp .love)</h2>
       <p id="game-line" class="muted"></p>
       <div class="row">
@@ -214,6 +232,10 @@ async function refreshStatus() {
   table.textContent = "";
   addRow(table, "Webmon", status.version);
   addRow(table, "Free space", formatBytes(status.tvFreeBytes));
+  const memory = status.memory;
+  addRow(table, "Memory", "Webmon uses " + memory.processMb + " MB; the TV has " + memory.availableMb + " MB of "
+    + memory.totalMb + " MB available" + (memory.swapFreeMb ? " and " + memory.swapFreeMb + " MB of free swap" : ""),
+    memory.availableMb < 200 ? "warn" : "");
   addRow(table, "Root", status.root.detail, status.root.available ? "ok" : "warn");
   addRow(table, "Downloads", status.curl ? "The TV can download by itself (curl)."
                                            : "No curl on this TV: upload files instead.", status.curl ? "ok" : "warn");
@@ -269,6 +291,20 @@ async function refreshStatus() {
       + ". Upload it below and it appears in the list on the TV.";
   }
   $("restart-banner").classList.toggle("hidden", !status.restartSuggested);
+
+  const swap = status.swap;
+  let swapText;
+  if (!swap.possible) swapText = "Needs root access and a USB drive with a Webmon folder.";
+  else if (swap.busy) swapText = swap.message || "Working...";
+  else if (swap.exists) swapText = swap.sizeMb + " MB swap file on the USB drive, " + (swap.active ? "in use." : "not in use.");
+  else swapText = "No swap file.";
+  // Problems are worth repeating; a success is already said by the line itself.
+  if (swap.message && !swap.busy && swap.message.startsWith("could not")) swapText += " (" + swap.message + ")";
+  $("swap-line").textContent = swapText;
+  $("swap-line").className = swap.exists && swap.active ? "ok" : "muted";
+  $("swap-controls").classList.toggle("hidden", !swap.possible);
+  $("swap-create").disabled = swap.busy;
+  $("swap-remove").disabled = swap.busy || !swap.exists;
   $("dest").disabled = status.usb.link === "none";
   if (status.usb.link === "none") $("dest").value = "tv";
 }
@@ -442,6 +478,15 @@ $("pin-button").addEventListener("click", connect);
 $("pin").addEventListener("keydown", (event) => { if (event.key === "Enter") connect(); });
 $("download-latest").addEventListener("click", () => startDownload());
 $("upload-button").addEventListener("click", uploadSelected);
+$("swap-create").addEventListener("click", async () => {
+  if (!confirm("Create a " + $("swap-size").value + " MB swap file on the USB drive? This takes a few minutes.")) return;
+  try { await api("POST", "/api/swap?size=" + $("swap-size").value); } catch (error) { alert(String(error.message || error)); }
+  refreshStatus();
+});
+$("swap-remove").addEventListener("click", async () => {
+  try { await api("DELETE", "/api/swap"); } catch (error) { alert(String(error.message || error)); }
+  refreshStatus();
+});
 try {
   const saved = localStorage.getItem("webmon-pin");
   if (saved) { $("pin").value = saved; connect(); }

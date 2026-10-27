@@ -85,11 +85,15 @@ bool IsDigit(int scancode, int digit)
  *   - Exit closes Webmon (turned into a quit event);
  *   - 1 toggles Webmon's info panel and is not passed on;
  *   - 0 is Start; the other remote keys follow kRemoteKeys.
- * Digits are left alone while the game takes text input (naming screens).
+ * Not limited to "no text input": LÖVE keeps SDL text input on all the time
+ * on desktop Linux, and gen1recomp's name entry uses its own on-screen keyboard.
  * @return 1 to keep the (possibly rewritten) event, 0 to drop it.
  */
 int RemoteEventFilter(void * /*userdata*/, SDL_Event *event)
 {
+    // The 1 key also arrives as typed text (text input is always on); it belongs to the panel.
+    if (event->type == SDL_TEXTINPUT && event->text.text[0] == '1' && event->text.text[1] == '\0')
+        return 0;
     if (event->type != SDL_KEYDOWN && event->type != SDL_KEYUP)
         return 1;
     const int scancode = event->key.keysym.scancode;
@@ -104,13 +108,14 @@ int RemoteEventFilter(void * /*userdata*/, SDL_Event *event)
         return 1;
     }
 
-    const bool typing = SDL_IsTextInputActive() == SDL_TRUE;
-    if (!typing && IsDigit(scancode, 1)) {
-        if (pressed && !event->key.repeat)
+    if (IsDigit(scancode, 1)) {
+        if (pressed && !event->key.repeat) {
             g_panelToggles.fetch_add(1);
+            std::printf("[Webmon] key 1: info panel\n");
+        }
         return 0;
     }
-    if (!typing && IsDigit(scancode, 0)) {
+    if (IsDigit(scancode, 0)) {
         event->key.keysym.scancode = SDL_SCANCODE_ESCAPE;
         event->key.keysym.sym      = SDLK_ESCAPE;
         return 1;

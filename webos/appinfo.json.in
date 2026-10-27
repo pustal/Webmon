@@ -8,7 +8,7 @@
     "icon": "icon.png",
     "largeIcon": "largeIcon.png",
     "iconColor": "#c0392b",
-    "appDescription": "Runs gen1recomp on webOS. Bring the game's .love release and your own ROM.",
+    "appDescription": "Runs gen1recomp on webOS. Downloads the game for you; bring your own ROM.",
     "supportTouchMode": "none",
     "useAllMouseButtons": false,
     "requiredACG": []

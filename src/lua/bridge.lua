@@ -11,6 +11,13 @@
 --    (also shown for a few seconds at start). The key is caught by the
 --    launcher's SDL filter (webmon.takePanelToggles), so the game never sees it.
 --
+-- 3. Memory. LÖVE objects (meshes, image data, canvases) hold large native
+--    buffers that Lua's garbage collector does not count, so a mod building
+--    lots of them (a voxel world cache) can run the TV out of RAM long before
+--    Lua thinks it is time to collect, and webOS then restarts the app. Once a
+--    second the bridge checks the process size and runs a full collection
+--    when it has grown a lot, or when the TV is running low.
+--
 -- The picker needs love.system, so the global require is wrapped and the
 -- picker installed just before "main" is required. Drawing hooks
 -- love.graphics.present, which every frame calls whatever the game does with
@@ -35,6 +42,10 @@ local KIND_FOLDERS = {
 }
 
 local PANEL_START_SECONDS = 10   -- info panel shown at start
+local MEMORY_CHECK_SECONDS = 1   -- how often the process size is checked
+local MEMORY_GROWTH_MB = 48      -- full collection after this much growth since the last one
+local MEMORY_LOW_MB = 160        -- ... or when the TV has less than this available
+local MEMORY_LOW_REPEAT_SECONDS = 5
 local REFRESH_SECONDS = 3        -- picker list refresh while open
 local VISIBLE_ROWS = 10
 
@@ -51,6 +62,13 @@ local picker = {
 local panel = {
   visible = true,
   hideIn = PANEL_START_SECONDS,
+}
+
+local memory = {
+  checkIn = 0,
+  lastCollectMb = nil, -- process size right after the last full collection
+  lastLowCollect = -math.huge,
+  peakMb = 0,
 }
 
 local fonts = {}
@@ -276,6 +294,32 @@ end
 
 -- ---- Wrapping the game's callbacks -----------------------------------------------
 
+-- Runs a full garbage collection when the process grew a lot or the TV runs low.
+local function manageMemory(dt, now)
+  memory.checkIn = memory.checkIn - dt
+  if memory.checkIn > 0 then return end
+  memory.checkIn = MEMORY_CHECK_SECONDS
+
+  local processMb, availableMb = webmon.memory()
+  if processMb <= 0 then return end
+  memory.lastCollectMb = memory.lastCollectMb or processMb
+  local grew = processMb - memory.lastCollectMb >= MEMORY_GROWTH_MB
+  local low = availableMb > 0 and availableMb < MEMORY_LOW_MB
+    and now - memory.lastLowCollect >= MEMORY_LOW_REPEAT_SECONDS
+  if grew or low then
+    collectgarbage("collect")
+    local afterMb, afterAvailableMb = webmon.memory()
+    memory.lastCollectMb = afterMb
+    if low then memory.lastLowCollect = now end
+    print(string.format("[Webmon] memory: collected (%s), %d -> %d MB, TV available %d -> %d MB",
+      low and "TV low" or "grew", processMb, afterMb, availableMb, afterAvailableMb))
+  end
+  if processMb >= memory.peakMb + 50 then
+    memory.peakMb = processMb
+    print(string.format("[Webmon] memory: new peak %d MB, TV available %d MB", processMb, availableMb))
+  end
+end
+
 -- Per-frame work, from the love.graphics.present hook: timers, the panel key,
 -- re-wrapping replaced callbacks, and drawing over the finished frame.
 local lastFrame = nil
@@ -297,6 +341,7 @@ local function beforePresent()
       panel.hideIn = nil
     end
   end
+  manageMemory(dt, now)
   if webmon.takePanelToggles() % 2 == 1 then
     panel.visible = not panel.visible
     panel.hideIn = nil

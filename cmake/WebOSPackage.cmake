@@ -66,7 +66,7 @@ if(WEBMON_ARES_PACKAGE)
                 -DAPP_ID=${WEBMON_APP_ID}
                 -DVERSION=${PROJECT_VERSION}
                 "-DTITLE=Webmon"
-                "-DDESCRIPTION=Runs gen1recomp (Pokemon Gen 1 Recompilation Project) on webOS. Bring the game's .love release and your own ROM."
+                "-DDESCRIPTION=Runs gen1recomp (Pokemon Gen 1 Recompilation Project) on webOS. Downloads the game for you; bring your own ROM."
                 -DICON_URI=https://raw.githubusercontent.com/pustal/Webmon/main/webos/largeIcon.png
                 -DSOURCE_URL=https://github.com/pustal/Webmon
                 -P "${WEBMON_ROOT}/cmake/WriteManifest.cmake"
