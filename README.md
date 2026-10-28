@@ -100,13 +100,15 @@ lot of 3D data at once. Webmon helps in two ways:
 - **Prompt clean-up.** LÖVE objects (meshes, image data) hold memory that Lua's
   garbage collector does not see, so it would wait too long to free them.
   Webmon checks the process size every second and runs a full clean-up after
-  it grows by 48 MB, or when the TV has less than 160 MB available. A full
-  clean-up stops the game while it runs (650-950 ms in a voxel town, where the
-  game makes about 100 MB of garbage a second), so they get a time budget: at
-  most 5% of play time (after a 900 ms one, the next waits 18 seconds), with
-  Lua's own collector working in between without stopping the game. They also
-  back off while they free little. Near the critical level below neither
-  applies: they run every 5 seconds.
+  it grows by 48 MB, or when the TV has less than 160 MB available. Done in
+  one go a clean-up would stop the game (650-950 ms in a voxel town, where the
+  game makes about 100 MB of garbage a second), so it is spread over frames:
+  a quarter of each frame's time until it is done (a second of work takes
+  about 4 seconds at 10 fps). Clean-ups also get a time budget, at most 5% of
+  play time (after 900 ms of work the next waits 18 seconds), with Lua's own
+  collector working in between, and back off while they free little. Near
+  the critical level below none of this applies: a full clean-up runs at once,
+  every 5 seconds.
   The log (`stdout.log`) records each clean-up with its pause and every new
   peak, plus the frame rate every 15 seconds and, once, the GPU driver, the
   window size and whether LuaJIT's compiler is on.

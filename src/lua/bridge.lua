@@ -72,6 +72,10 @@ local MEMORY_LOW_REPEAT_MAX_SECONDS = 60 -- ... an interval that doubles up to t
 local MEMORY_USEFUL_MB = 16      -- a collection freeing less than this was not worth its pause
 local MEMORY_PAUSE_BUDGET = 0.05 -- forced clean-ups may take at most this share of play time
                                  -- (a 900 ms one waits 18 s); Lua's own collector runs between
+local MEMORY_SLICE_SHARE = 0.25  -- a clean-up works this share of each frame's time, so the game never stops
+local MEMORY_SLICE_MIN_MS = 4    -- ... at least this long per frame
+local MEMORY_SLICE_MAX_MS = 30   -- ... at most this long per frame
+local MEMORY_SLICE_MAX_SECONDS = 8 -- ... and finishes in one go if it has not after this long
 local MEMORY_CRITICAL_MB = 130   -- still under this after a collection: critical
 local MEMORY_CRITICAL_TIMES = 3  -- ... this many times in a row: offer a fresh start
 local PERF_LOG_SECONDS = 15      -- how often frame rate and clean-up time are logged
@@ -241,6 +245,7 @@ local memory = {
   lastLowCollect = -math.huge,
   growthLimitMb = MEMORY_GROWTH_MB,             -- current growth trigger (adaptive)
   nextAllowed = -math.huge,                     -- no forced clean-up before this (time budget)
+  slicing = nil,  -- the clean-up being done a slice per frame: reason, startedAt, before, workMs, cycles
   lowRepeatSeconds = MEMORY_LOW_REPEAT_SECONDS, -- current low-memory interval (adaptive)
   peakMb = 0,
   criticalCount = 0,
@@ -591,7 +596,71 @@ end
 
 -- ---- Wrapping the game's callbacks -----------------------------------------------
 
--- Runs a full garbage collection when the process grew a lot or the TV runs low.
+-- Records a finished clean-up: budget, backoff, log, and the fresh-start check.
+local function finishCleanup(cleanup, now)
+  memory.slicing = nil
+  local pauseMs = cleanup.workMs
+  local luaAfterMb = collectgarbage("count") / 1024
+  memory.nextAllowed = now + pauseMs / 1000 / MEMORY_PAUSE_BUDGET
+  perf.collectMs = perf.collectMs + pauseMs
+  perf.collections = perf.collections + 1
+  local afterMb, afterAvailableMb = webmon.memory()
+  local freedMb = cleanup.processMb - afterMb
+  memory.lastCollectMb = afterMb
+  if cleanup.low then memory.lastLowCollect = now end
+  if freedMb < MEMORY_USEFUL_MB then
+    if cleanup.grew then memory.growthLimitMb = math.min(memory.growthLimitMb * 2, MEMORY_GROWTH_MAX_MB) end
+    if cleanup.low then memory.lowRepeatSeconds = math.min(memory.lowRepeatSeconds * 2, MEMORY_LOW_REPEAT_MAX_SECONDS) end
+  else
+    memory.growthLimitMb = MEMORY_GROWTH_MB
+    memory.lowRepeatSeconds = MEMORY_LOW_REPEAT_SECONDS
+  end
+  print(string.format("[Webmon] memory: collected (%s) with %d ms of work over %.1f s, %d -> %d MB "
+    .. "(Lua heap %d -> %d MB), TV available %d -> %d MB",
+    cleanup.reason, math.floor(pauseMs + 0.5), now - cleanup.startedAt, cleanup.processMb, afterMb,
+    math.floor(cleanup.luaBeforeMb + 0.5), math.floor(luaAfterMb + 0.5), cleanup.availableMb, afterAvailableMb))
+  -- Still critical after collecting, several times in a row: offer a fresh start.
+  if afterAvailableMb > 0 and afterAvailableMb < MEMORY_CRITICAL_MB then
+    memory.criticalCount = memory.criticalCount + 1
+  else
+    memory.criticalCount = 0
+  end
+  if memory.criticalCount >= MEMORY_CRITICAL_TIMES and not memory.restartIn and not memory.quitting
+      and now >= memory.snoozeUntil then
+    memory.restartIn = RESTART_COUNTDOWN_SECONDS
+    print(string.format("[Webmon] memory: TV still has only %d MB after collecting; fresh start in %d s",
+      afterAvailableMb, RESTART_COUNTDOWN_SECONDS))
+  end
+end
+
+-- Works on the running clean-up for a share of the last frame's time
+-- (MEMORY_SLICE_SHARE, within MEMORY_SLICE_MIN_MS..MAX_MS), so at 10 fps a
+-- clean-up with 1 s of work takes about 4 s and never stops the game.
+-- Lua's collector is incremental: "step" advances its current cycle and says
+-- when a cycle ends. The cycle running when the clean-up began may have
+-- marked before the newest garbage existed, so it ends after a second one.
+local function stepCleanup(dt, now)
+  local cleanup = memory.slicing
+  if not cleanup then return end
+  local sliceMs = math.min(MEMORY_SLICE_MAX_MS, math.max(MEMORY_SLICE_MIN_MS, dt * 1000 * MEMORY_SLICE_SHARE))
+  local started = love.timer.getTime()
+  local deadline = started + sliceMs / 1000
+  repeat
+    if collectgarbage("step", 0) then
+      cleanup.cycles = cleanup.cycles + 1
+      if cleanup.cycles >= 2 then break end
+    end
+  until love.timer.getTime() >= deadline
+  if cleanup.cycles < 2 and now - cleanup.startedAt >= MEMORY_SLICE_MAX_SECONDS then
+    collectgarbage("collect") -- taking too long while garbage keeps coming: finish in one go
+    cleanup.reason = cleanup.reason .. ", finished at once"
+    cleanup.cycles = 2
+  end
+  cleanup.workMs = cleanup.workMs + (love.timer.getTime() - started) * 1000
+  if cleanup.cycles >= 2 then finishCleanup(cleanup, now) end
+end
+
+-- Starts a clean-up when the process grew a lot or the TV runs low.
 local function manageMemory(dt, now)
   memory.checkIn = memory.checkIn - dt
   if memory.checkIn > 0 then return end
@@ -615,40 +684,29 @@ local function manageMemory(dt, now)
   local low = availableMb > 0 and availableMb < MEMORY_LOW_MB
     and now - memory.lastLowCollect >= lowInterval
   local allowed = critical or now >= memory.nextAllowed
+  if memory.slicing and not critical then return end
   if (grew or low) and allowed then
-    local luaBeforeMb = collectgarbage("count") / 1024
-    local started = love.timer.getTime()
-    collectgarbage("collect")
-    local pauseMs = (love.timer.getTime() - started) * 1000
-    local luaAfterMb = collectgarbage("count") / 1024
-    memory.nextAllowed = now + pauseMs / 1000 / MEMORY_PAUSE_BUDGET
-    perf.collectMs = perf.collectMs + pauseMs
-    perf.collections = perf.collections + 1
-    local afterMb, afterAvailableMb = webmon.memory()
-    local freedMb = processMb - afterMb
-    memory.lastCollectMb = afterMb
-    if low then memory.lastLowCollect = now end
-    if freedMb < MEMORY_USEFUL_MB then
-      if grew then memory.growthLimitMb = math.min(memory.growthLimitMb * 2, MEMORY_GROWTH_MAX_MB) end
-      if low then memory.lowRepeatSeconds = math.min(memory.lowRepeatSeconds * 2, MEMORY_LOW_REPEAT_MAX_SECONDS) end
+    local cleanup = {
+      reason = low and "TV low" or "grew",
+      grew = grew,
+      low = low,
+      startedAt = now,
+      processMb = processMb,
+      availableMb = availableMb,
+      luaBeforeMb = collectgarbage("count") / 1024,
+      workMs = 0,
+      cycles = 0,
+    }
+    if critical then
+      -- No time to spread it: one full collection now.
+      memory.slicing = nil
+      local started = love.timer.getTime()
+      collectgarbage("collect")
+      cleanup.workMs = (love.timer.getTime() - started) * 1000
+      cleanup.reason = cleanup.reason .. ", at once"
+      finishCleanup(cleanup, now)
     else
-      memory.growthLimitMb = MEMORY_GROWTH_MB
-      memory.lowRepeatSeconds = MEMORY_LOW_REPEAT_SECONDS
-    end
-    print(string.format("[Webmon] memory: collected (%s) in %d ms, %d -> %d MB (Lua heap %d -> %d MB), TV available %d -> %d MB",
-      low and "TV low" or "grew", math.floor(pauseMs + 0.5), processMb, afterMb,
-      math.floor(luaBeforeMb + 0.5), math.floor(luaAfterMb + 0.5), availableMb, afterAvailableMb))
-    -- Still critical after collecting, several times in a row: offer a fresh start.
-    if afterAvailableMb > 0 and afterAvailableMb < MEMORY_CRITICAL_MB then
-      memory.criticalCount = memory.criticalCount + 1
-    else
-      memory.criticalCount = 0
-    end
-    if memory.criticalCount >= MEMORY_CRITICAL_TIMES and not memory.restartIn and not memory.quitting
-        and now >= memory.snoozeUntil then
-      memory.restartIn = RESTART_COUNTDOWN_SECONDS
-      print(string.format("[Webmon] memory: TV still has only %d MB after collecting; fresh start in %d s",
-        afterAvailableMb, RESTART_COUNTDOWN_SECONDS))
+      memory.slicing = cleanup
     end
   end
   if processMb >= memory.peakMb + 50 then
@@ -721,6 +779,7 @@ local function beforePresent()
   end
   trackFrames(dt, now)
   manageMemory(dt, now)
+  stepCleanup(dt, now)
   if memory.restartIn then
     memory.restartIn = memory.restartIn - dt
     if memory.restartIn <= 0 then freshStart() end

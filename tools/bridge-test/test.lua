@@ -110,45 +110,54 @@ clock = clock + 130                           -- after the snooze
 for _ = 1, 4 do frame(6) end
 for _ = 1, 20 do frame(1) end                 -- countdown runs out
 assert(freshRequested and quitWith == "restart", "fresh start requested")
--- Low (not critical) memory that collections cannot free: clean-ups back off
--- (5, 10, 20, 40 s ...) instead of pausing the game every 5 seconds.
-local collections = 0
-local realCollect = collectgarbage
-collectgarbage = function(what, ...)
-  if what == "collect" then collections = collections + 1 end
-  return realCollect(what, ...)
+-- A model of Lua's collector for the clean-up tests: each "step" costs 6 ms,
+-- a cycle ends every 75 steps (450 ms of work), a full "collect" costs 900 ms.
+-- Finished clean-ups are counted from the log.
+local realCollect, realPrint = collectgarbage, print
+local finished, fullCollects, steps, freeOnCycle = 0, 0, 0, 0
+print = function(text, ...)
+  if type(text) == "string" and text:find("memory: collected", 1, true) then finished = finished + 1 end
+  return realPrint(text, ...)
 end
-memoryNow = { 900, 150 }
-for _ = 1, 120 do frame(1) end
-collectgarbage = realCollect
-assert(collections >= 1 and collections <= 6, "backed off (24 without): " .. collections .. " clean-ups in 2 minutes")
--- A voxel town: ~100 MB of garbage a second, plenty of TV memory, each forced
--- clean-up stopping the game for 900 ms. The time budget keeps them to about
--- one per 18 s instead of one a second.
-local slowCollections = 0
 collectgarbage = function(what, ...)
-  if what == "collect" then
-    slowCollections = slowCollections + 1
+  if what == "step" then
+    steps = steps + 1
+    clock = clock + 0.006
+    if steps % 75 == 0 then memoryNow[1] = memoryNow[1] - freeOnCycle; return true end
+    return false
+  elseif what == "collect" then
+    fullCollects = fullCollects + 1
     clock = clock + 0.9
-    memoryNow[1] = memoryNow[1] - 100
+    memoryNow[1] = memoryNow[1] - 2 * freeOnCycle
+    return 0
   end
   return realCollect(what, ...)
 end
+local function reset() finished, fullCollects = 0, 0 end
+
+-- Low (not critical) memory that clean-ups cannot free: they back off
+-- (5, 10, 20, 40 s ...) instead of running every 5 seconds.
+reset(); freeOnCycle = 0
+memoryNow = { 900, 150 }
+for _ = 1, 1200 do frame(0.1) end
+assert(finished >= 1 and finished <= 7, "backed off (24 without): " .. finished .. " clean-ups in 2 minutes")
+assert(fullCollects == 0, "spread over frames, never all at once")
+
+-- A voxel town: ~100 MB of garbage a second, plenty of TV memory. Clean-ups
+-- are spread over frames (the game never stops for one) and kept to the time budget.
+reset(); freeOnCycle = 50
 memoryNow = { 450, 400 }
-for _ = 1, 60 do
-  memoryNow[1] = memoryNow[1] + 100
-  frame(1)
+for _ = 1, 600 do
+  memoryNow[1] = memoryNow[1] + 10
+  frame(0.1)
 end
-collectgarbage = realCollect
-assert(slowCollections >= 2 and slowCollections <= 5, "time budget: " .. slowCollections .. " clean-ups in a minute")
--- Near the critical level the budget does not apply.
-slowCollections = 0
-collectgarbage = function(what, ...)
-  if what == "collect" then slowCollections = slowCollections + 1; clock = clock + 0.9 end
-  return realCollect(what, ...)
-end
+assert(fullCollects == 0, "town: no stop-the-world clean-up, got " .. fullCollects)
+assert(finished >= 1 and finished <= 6, "town: time budget, " .. finished .. " clean-ups in a minute")
+
+-- Near the critical level: a full clean-up at once, every few seconds.
+reset(); freeOnCycle = 0
 memoryNow = { 900, 100 }
 for _ = 1, 30 do frame(1) end
-collectgarbage = realCollect
-assert(slowCollections >= 5, "critical: clean-ups every few seconds, got " .. slowCollections)
+assert(fullCollects >= 5, "critical: clean-ups every few seconds, got " .. fullCollects)
+collectgarbage, print = realCollect, realPrint
 print("bridge test ok")
