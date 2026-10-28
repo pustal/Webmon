@@ -16,7 +16,11 @@
 --    lots of them (a voxel world cache) can run the TV out of RAM long before
 --    Lua thinks it is time to collect, and webOS then restarts the app. Once a
 --    second the bridge checks the process size and runs a full collection
---    when it has grown a lot, or when the TV is running low.
+--    when it has grown a lot, or when the TV is running low. If the TV stays
+--    critically low even after collecting, the whole TV would soon freeze, so
+--    a countdown offers a fresh start: the game quits cleanly and Webmon
+--    starts again as a new process, handing all its memory back (a voxel
+--    cache build then resumes where it stopped).
 --
 -- The picker needs love.system, so the global require is wrapped and the
 -- picker installed just before "main" is required. Drawing hooks
@@ -46,6 +50,10 @@ local MEMORY_CHECK_SECONDS = 1   -- how often the process size is checked
 local MEMORY_GROWTH_MB = 48      -- full collection after this much growth since the last one
 local MEMORY_LOW_MB = 160        -- ... or when the TV has less than this available
 local MEMORY_LOW_REPEAT_SECONDS = 5
+local MEMORY_CRITICAL_MB = 130   -- still under this after a collection: critical
+local MEMORY_CRITICAL_TIMES = 3  -- ... this many times in a row: offer a fresh start
+local RESTART_COUNTDOWN_SECONDS = 15
+local RESTART_SNOOZE_SECONDS = 120 -- after Back, how long before offering again
 local REFRESH_SECONDS = 3        -- picker list refresh while open
 local VISIBLE_ROWS = 10
 
@@ -69,7 +77,27 @@ local memory = {
   lastCollectMb = nil, -- process size right after the last full collection
   lastLowCollect = -math.huge,
   peakMb = 0,
+  criticalCount = 0,
+  restartIn = nil,          -- seconds left on the fresh-start countdown, when shown
+  quitting = false,         -- a fresh start was requested; the game is shutting down
+  snoozeUntil = -math.huge, -- no new countdown before this time
 }
+
+-- Quits the game cleanly and asks the launcher for a new process.
+local function freshStart()
+  memory.restartIn = nil
+  memory.quitting = true
+  print("[Webmon] memory: the TV is nearly out of memory; starting afresh")
+  webmon.requestFreshStart()
+  love.event.quit("restart")
+end
+
+local function cancelRestart(now)
+  memory.restartIn = nil
+  memory.criticalCount = 0
+  memory.snoozeUntil = now + RESTART_SNOOZE_SECONDS
+  print("[Webmon] memory: fresh start cancelled by the player")
+end
 
 local fonts = {}
 
@@ -221,6 +249,34 @@ local function drawPicker()
     y + h - pad - math.floor(30 * s))
 end
 
+local function drawRestartNotice()
+  local s = scale()
+  local width, height = love.graphics.getDimensions()
+  local lines = {
+    "The TV is almost out of memory.",
+    string.format("Webmon will restart the game in %d seconds to free it.", math.max(0, math.ceil(memory.restartIn))),
+    "Unsaved progress is lost. A map cache build continues where it stopped",
+    "(choose its prebuild again if the game asks).",
+    "OK: restart now    Back: keep playing",
+  }
+  local titleFont = font(math.floor(34 * s))
+  local textFont = font(math.floor(26 * s))
+  local pad = math.floor(28 * s)
+  local lineHeight = math.floor(38 * s)
+  local w = math.floor(1100 * s)
+  local h = pad * 2 + math.floor(48 * s) + (#lines - 1) * lineHeight
+  local x, y = math.floor((width - w) / 2), math.floor((height - h) / 2)
+  drawBox(x, y, w, h)
+  love.graphics.setFont(titleFont)
+  love.graphics.setColor(1, 0.55, 0.45)
+  love.graphics.print(lines[1], x + pad, y + pad)
+  love.graphics.setFont(textFont)
+  for i = 2, #lines do
+    love.graphics.setColor(i == #lines and 0.6 or 0.92, i == #lines and 0.63 or 0.92, i == #lines and 0.75 or 0.96)
+    love.graphics.print(lines[i], x + pad, y + pad + math.floor(48 * s) + (i - 2) * lineHeight)
+  end
+end
+
 local function drawPanel()
   local s = scale()
   local width = love.graphics.getDimensions()
@@ -257,7 +313,7 @@ end
 
 -- Draws the picker and/or panel over whatever the game drew, in screen space.
 local function drawOverlays()
-  if not picker.open and not panel.visible then return end
+  if not picker.open and not panel.visible and not memory.restartIn then return end
   love.graphics.push("all")
   love.graphics.setCanvas()
   love.graphics.origin()
@@ -266,6 +322,7 @@ local function drawOverlays()
   love.graphics.setBlendMode("alpha")
   if panel.visible then drawPanel() end
   if picker.open then drawPicker() end
+  if memory.restartIn then drawRestartNotice() end
   love.graphics.pop()
 end
 
@@ -313,6 +370,18 @@ local function manageMemory(dt, now)
     if low then memory.lastLowCollect = now end
     print(string.format("[Webmon] memory: collected (%s), %d -> %d MB, TV available %d -> %d MB",
       low and "TV low" or "grew", processMb, afterMb, availableMb, afterAvailableMb))
+    -- Still critical after collecting, several times in a row: offer a fresh start.
+    if afterAvailableMb > 0 and afterAvailableMb < MEMORY_CRITICAL_MB then
+      memory.criticalCount = memory.criticalCount + 1
+    else
+      memory.criticalCount = 0
+    end
+    if memory.criticalCount >= MEMORY_CRITICAL_TIMES and not memory.restartIn and not memory.quitting
+        and now >= memory.snoozeUntil then
+      memory.restartIn = RESTART_COUNTDOWN_SECONDS
+      print(string.format("[Webmon] memory: TV still has only %d MB after collecting; fresh start in %d s",
+        afterAvailableMb, RESTART_COUNTDOWN_SECONDS))
+    end
   end
   if processMb >= memory.peakMb + 50 then
     memory.peakMb = processMb
@@ -342,6 +411,10 @@ local function beforePresent()
     end
   end
   manageMemory(dt, now)
+  if memory.restartIn then
+    memory.restartIn = memory.restartIn - dt
+    if memory.restartIn <= 0 then freshStart() end
+  end
   if webmon.takePanelToggles() % 2 == 1 then
     panel.visible = not panel.visible
     panel.hideIn = nil
@@ -355,6 +428,11 @@ end
 local game = {}
 local wrappers = {
   keypressed = function(key, ...)
+    if memory.restartIn then
+      if key == "return" or key == "kpenter" or key == "z" then freshStart()
+      elseif key == "escape" or key == "x" or key == "backspace" then cancelRestart(love.timer.getTime()) end
+      return
+    end
     if picker.open then return pickerKey(key) end
     if game.keypressed then return game.keypressed(key, ...) end
   end,
@@ -367,6 +445,11 @@ local wrappers = {
     if game.textinput then return game.textinput(...) end
   end,
   gamepadpressed = function(joystick, button, ...)
+    if memory.restartIn then
+      if button == "a" then freshStart()
+      elseif button == "b" or button == "back" then cancelRestart(love.timer.getTime()) end
+      return
+    end
     if picker.open then return pickerButton(button) end
     if game.gamepadpressed then return game.gamepadpressed(joystick, button, ...) end
   end,

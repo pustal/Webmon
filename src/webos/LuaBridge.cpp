@@ -13,6 +13,7 @@
  *   webmon.dataFolder()        -> the app's data folder
  *   webmon.takePanelToggles()  -> presses of remote key 1 since the last call
  *   webmon.memory()            -> this process's MB in RAM, MB the TV still has available
+ *   webmon.requestFreshStart() -> after the game quits, Webmon starts again as a new process
  */
 #include "LuaBridge.h"
 
@@ -147,6 +148,12 @@ int LuaMemory(lua_State *L)
     return 2;
 }
 
+int LuaRequestFreshStart(lua_State * /*L*/)
+{
+    RequestFreshStart();
+    return 0;
+}
+
 /** Loads bridge.lua and leaves its install function on the stack. @return False on a syntax error. */
 bool PushBridgeScript(lua_State *L)
 {
@@ -174,6 +181,7 @@ void InstallLuaBridge(lua_State *L, const BridgeContext &context)
         { "dataFolder", LuaDataFolder },
         { "takePanelToggles", LuaTakePanelToggles },
         { "memory", LuaMemory },
+        { "requestFreshStart", LuaRequestFreshStart },
         { nullptr, nullptr },
     };
     lua_newtable(L);

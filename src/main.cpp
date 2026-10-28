@@ -181,9 +181,13 @@ int main(int argc, char **argv)
         // Again on every run: LÖVE shuts SDL down between runs, which drops the event filter.
         webmon::InstallRemoteHandling();
         done = RunLove(args, bridge, exitCode);
-    } while (done == DoneAction::Restart);
+    } while (done == DoneAction::Restart && !webmon::FreshStartRequested());
 
     server.Stop();
+    if (webmon::FreshStartRequested()) {
+        // Leave the swap file on: the new process uses it straight away.
+        webmon::FreshStart(argv);
+    }
     swap.Deactivate();
     return exitCode;
 }

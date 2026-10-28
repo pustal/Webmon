@@ -92,6 +92,13 @@ lot of 3D data at once. Webmon helps in two ways:
   Webmon checks the process size every second and runs a full clean-up after
   it grows by 48 MB, or when the TV has less than 160 MB available. The log
   (`stdout.log`) records each clean-up and every new peak.
+- **A fresh start before the TV freezes.** When the TV still has less than
+  130 MB available after three clean-ups in a row, Webmon shows a 15-second
+  countdown, then quits the game cleanly and starts again as a new process,
+  which hands all its memory back to the TV. OK restarts at once; Back keeps
+  playing (it asks again after two minutes if memory stays that low). Unsaved
+  progress is lost, but a voxel cache build continues where it stopped, and
+  the logs carry on across the restart.
 - **A swap file (root, optional).** webOS TVs usually have compressed swap of
   their own (the upload page shows it). The page can add a swap file of 512 MB
   to 2 GB in the USB `Webmon` folder; Webmon switches it on whenever it runs

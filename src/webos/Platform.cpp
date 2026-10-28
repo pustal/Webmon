@@ -9,6 +9,7 @@
 #include <atomic>
 
 #include <cerrno>
+#include <cstring>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -54,6 +55,12 @@ constexpr KeyMapping kRemoteKeys[] = {
     { kScancodeWebOSChannelUp, SDL_SCANCODE_Q, SDLK_q },       // CH+: L
     { kScancodeWebOSChannelDown, SDL_SCANCODE_E, SDLK_e },     // CH-: R
 };
+
+/** Set in the environment of a process started by FreshStart(). */
+constexpr const char *kFreshStartVariable = "WEBMON_FRESH_START";
+
+/** True once the Lua bridge asked for a fresh start. */
+std::atomic<bool> g_freshStartRequested{ false };
 
 /** Number of key presses of remote key 1 not yet handled by the Lua bridge. */
 std::atomic<int> g_panelToggles{ 0 };
@@ -151,7 +158,9 @@ std::string PrepareDataFolder()
         EnsureFolder(folder + "/" + sub);
 
     if (!std::getenv("WEBMON_LOG_TO_CONSOLE")) {
-        if (!std::freopen("stdout.log", "w", stdout) || !std::freopen("stderr.log", "w", stderr))
+        // After a fresh start (see RequestFreshStart) the logs continue instead of starting over.
+        const char *mode = std::getenv(kFreshStartVariable) ? "a" : "w";
+        if (!std::freopen("stdout.log", mode, stdout) || !std::freopen("stderr.log", mode, stderr))
             std::fprintf(stderr, "[Webmon] cannot open the log files\n");
         // Line-buffer so a crash still leaves the last lines in the logs.
         std::setvbuf(stdout, nullptr, _IOLBF, 0);
@@ -172,6 +181,26 @@ void InstallRemoteHandling()
     SDL_SetHint("SDL_WEBOS_ACCESS_POLICY_KEYS_EXIT", "true");
     SDL_SetHint("SDL_WEBOS_CURSOR_SLEEP_TIME", "1000");
     SDL_SetEventFilter(RemoteEventFilter, nullptr);
+}
+
+void RequestFreshStart()
+{
+    g_freshStartRequested.store(true);
+}
+
+bool FreshStartRequested()
+{
+    return g_freshStartRequested.load();
+}
+
+void FreshStart(char **argv)
+{
+    std::printf("[Webmon] starting afresh to give the TV its memory back\n");
+    std::fflush(stdout);
+    std::fflush(stderr);
+    setenv(kFreshStartVariable, "1", 1);
+    execv("/proc/self/exe", argv);
+    std::fprintf(stderr, "[Webmon] could not start afresh (%s)\n", std::strerror(errno));
 }
 
 int TakePanelToggles()
