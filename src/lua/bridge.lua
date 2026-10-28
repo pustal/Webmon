@@ -26,6 +26,14 @@
 --    starts again as a new process, handing all its memory back (a voxel
 --    cache build then resumes where it stopped).
 --
+-- 4. Lua compiler. LÖVE 11.5 switches LuaJIT's compiler off on every ARM
+--    device (jitsetup.lua: on some phones its machine code could not be
+--    placed near the interpreter). Everything then runs interpreted, several
+--    times slower, which a voxel mod's 3D view feels most. LÖVE reserves the
+--    compiler's memory before switching it off, so Webmon switches it back on
+--    before the game starts, unless the menu's toggle left a "jit-off" file in
+--    the data folder. Compiled and aborted traces are counted for the log.
+--
 -- The picker needs love.system, so the global require is wrapped and the
 -- picker installed just before "main" is required. Drawing hooks
 -- love.graphics.present, which every frame calls whatever the game does with
@@ -85,6 +93,58 @@ local panel = {
   hideIn = PANEL_START_SECONDS,
 }
 
+-- ---- Lua compiler (LuaJIT) ---------------------------------------------------------
+
+local JIT_OFF_FILE = "/jit-off" -- in the data folder: the player switched the compiler off
+
+local compiler = {
+  wanted = true,   -- the player's choice (persisted as JIT_OFF_FILE)
+  traces = 0,      -- traces compiled since the last perf line
+  aborts = 0,      -- traces abandoned since the last perf line
+}
+
+local function jitOffPath()
+  return webmon.dataFolder() .. JIT_OFF_FILE
+end
+
+-- Counts what the compiler does, for the perf line in the log.
+local function watchCompiler()
+  if not (jit and jit.attach) then return end
+  jit.attach(function(what)
+    if what == "stop" then compiler.traces = compiler.traces + 1
+    elseif what == "abort" then compiler.aborts = compiler.aborts + 1 end
+  end, "trace")
+end
+
+-- Applies the player's choice (before the game starts, and from the menu).
+local function applyCompiler()
+  if not jit then return end
+  if compiler.wanted then jit.on() else jit.off(); jit.flush() end
+  print("[Webmon] Lua compiler (JIT) " .. (jit.status() and "on" or "off"))
+end
+
+local function setupCompiler()
+  if not jit then return end
+  local file = io.open(jitOffPath(), "r")
+  compiler.wanted = file == nil
+  if file then file:close() end
+  watchCompiler()
+  applyCompiler()
+end
+
+-- Menu toggle: switch now and remember it.
+local function toggleCompiler()
+  if not jit then return end
+  compiler.wanted = not compiler.wanted
+  if compiler.wanted then
+    os.remove(jitOffPath())
+  else
+    local file = io.open(jitOffPath(), "w")
+    if file then file:write("off\n"); file:close() end
+  end
+  applyCompiler()
+end
+
 -- ---- Menu -------------------------------------------------------------------------
 
 -- Entries: label, and what OK does (key: a key press handed to the game; run:
@@ -104,6 +164,8 @@ local MENU = {
   { label = "Game speed slower / faster  (Left / Right)", left = "0", right = "1" },
   { label = "Mod manager", key = "f10", close = true },
   { label = "Voxel debug overlay: timings (PotatoVoxel)", key = "f9", close = true },
+  { label = function() return "Lua compiler (faster): " .. (jit and jit.status() and "ON" or "OFF") end,
+    run = "compiler" },
   { label = "Quit Webmon", run = "quit" },
 }
 
@@ -138,6 +200,8 @@ local function activateMenu()
   local entry = MENU[menu.index]
   if entry.run == "close" then
     toggleMenu()
+  elseif entry.run == "compiler" then
+    toggleCompiler()
   elseif entry.run == "quit" then
     if not menu.confirmQuit then
       menu.confirmQuit = true
@@ -412,7 +476,7 @@ local function drawMenu()
       love.graphics.setColor(0.35, 0.67, 1, 0.35)
       love.graphics.rectangle("fill", x + pad - 10, rowY - 4, w - pad * 2 + 20, rowHeight - 4, 8, 8)
     end
-    local label = entry.label
+    local label = type(entry.label) == "function" and entry.label() or entry.label
     if entry.run == "quit" and menu.confirmQuit and i == menu.index then
       label = "Press OK again to quit (unsaved progress is lost)"
       love.graphics.setColor(1, 0.55, 0.45)
@@ -611,8 +675,10 @@ local function trackFrames(dt, now)
   perf.worstMs = math.max(perf.worstMs, dt * 1000)
   local elapsed = now - perf.since
   if elapsed < PERF_LOG_SECONDS then return end
-  print(string.format("[Webmon] perf: %.1f fps, slowest frame %d ms, %d clean-ups took %d ms",
-    perf.frames / elapsed, math.floor(perf.worstMs + 0.5), perf.collections, math.floor(perf.collectMs + 0.5)))
+  print(string.format("[Webmon] perf: %.1f fps, slowest frame %d ms, %d clean-ups took %d ms; JIT %s, %d traces, %d aborted",
+    perf.frames / elapsed, math.floor(perf.worstMs + 0.5), perf.collections, math.floor(perf.collectMs + 0.5),
+    jit and jit.status() and "on" or "off", compiler.traces, compiler.aborts))
+  compiler.traces, compiler.aborts = 0, 0
   perf.frames, perf.worstMs, perf.collectMs, perf.collections, perf.since = 0, 0, 0, 0, now
 end
 
@@ -717,6 +783,7 @@ require = function(name, ...)
   installed = true
   require = originalRequire
   if love.system then installPicker() end
+  setupCompiler()
   local result = originalRequire(name, ...)
   wrapInput()
   if love.graphics then hookPresent() end

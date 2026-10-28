@@ -153,6 +153,20 @@ uploaded:
 If anything differs (game release, mod version, ROM), the mod treats the
 cache as stale and builds it again.
 
+## Speed
+
+LÖVE 11.5 switches LuaJIT's compiler off on every ARM device (on some phones
+its machine code could not be placed where it needs to be), so the game would
+run interpreted, several times slower; a voxel mod's 3D view shows it most.
+Webmon switches the compiler back on before the game starts. If it ever
+misbehaves, the menu's **Lua compiler** entry turns it off (remembered across
+starts) and on again. `stdout.log` shows, every 15 seconds, the frame rate,
+the slowest frame, the clean-ups' pauses and how many traces the compiler
+built or abandoned.
+
+For voxel mods on the TV's GPU, PotatoVoxel's LOW or POTATO preset (lower
+render scale) and switching its shadows off help most.
+
 ## Controls
 
 A game controller works as in gen1recomp. The TV remote:
@@ -179,6 +193,7 @@ remote or controller the game's keyboard-only shortcuts:
 | Game speed slower / faster | 0 / 1 |
 | Mod manager | F10 |
 | Voxel debug overlay (PotatoVoxel's timings) | F9 |
+| Lua compiler on / off (see [Speed](#speed)) | (Webmon setting) |
 | Quit Webmon | (asks for a second OK) |
 
 Up/Down choose, OK runs it, Left/Right adjust the "/" entries, Back (B), 1 or

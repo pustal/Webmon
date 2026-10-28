@@ -17,7 +17,12 @@ webmon = {
   takePanelToggles = function() return 0 end,
   memory = function() return memoryNow[1], memoryNow[2] end,
   requestFreshStart = function() freshRequested = true end,
+  dataFolder = function() return testFolder end,
 }
+-- The data folder for the compiler switch; LÖVE starts with the compiler off on ARM.
+testFolder = os.getenv("TMPDIR") or "/tmp"
+os.remove(testFolder .. "/jit-off")
+if jit then jit.off() end
 -- Drawing calls do nothing; the few that return values return plausible ones.
 local graphics = setmetatable({
   present = function() end,
@@ -35,6 +40,7 @@ package.preload.main = function()
 end
 dofile(arg[1])
 require("main")
+if jit then assert(jit.status(), "the bridge switches the compiler back on") end
 assert(love.system.pickFileKinds() == "rom,sav,mod,cart,required_import")
 assert(love.system.pickFile("rom") == true and pending == "rom")
 love.keypressed("down")          -- to B.gb
@@ -70,6 +76,15 @@ assert(gameKeys[before + 2] == "new:-" and gameKeys[before + 3] == "new:=", "zoo
 love.keypressed("x")                                  -- Back closes
 love.keypressed("up")
 assert(gameKeys[#gameKeys] == "new:up", "menu closed, game has the input again")
+if jit then
+  -- Menu entry "Lua compiler": off, remembered, and on again.
+  love.gamepadpressed(nil, "guide"); love.keypressed("up"); love.keypressed("up")
+  love.keypressed("return")
+  assert(not jit.status() and io.open(testFolder .. "/jit-off"), "compiler off and remembered")
+  love.keypressed("return")
+  assert(jit.status() and not io.open(testFolder .. "/jit-off"), "compiler on again")
+  love.keypressed("x")
+end
 love.gamepadpressed(nil, "guide"); love.keypressed("up")   -- opens at the top; up wraps to Quit
 love.keypressed("return")
 assert(quitWith == nil, "first OK only asks")
