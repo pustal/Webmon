@@ -4,8 +4,6 @@
  */
 #include "Library.h"
 
-#include "ZipReader.h"
-
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
@@ -508,8 +506,13 @@ std::string Library::ModStorageRoot() const
 namespace
 {
 
-/** Room left free beside an unpacked archive, for the game's own writes. */
+/** Room left free beside uploaded mod data, for the game's own writes. */
 constexpr std::uint64_t kSpareBytes = 32ull * 1024ull * 1024ull;
+/** Folder inside a playthrough where an upload collects before it replaces anything. */
+constexpr const char *kStagingFolder = ".webmon-incoming";
+/** Limits on an uploaded mod data path ("<mod id>/<key>.bin"). */
+constexpr std::size_t kMaxModPathLength   = 512;
+constexpr std::size_t kMaxModPathSegments = 16;
 
 /** Free bytes on the file system holding @p path (0 if unknown). */
 std::uint64_t FreeBytesAt(const std::string &path)
@@ -528,68 +531,123 @@ std::string Megabytes(std::uint64_t bytes)
     return text;
 }
 
+/**
+ * True for a path gen1recomp's mod storage could have written below a
+ * playthrough: "<mod id>/<folders>/<file>", folders made of letters, digits,
+ * "_" and "-" (the game's key rule), the file adding its ".bin"/".lua" (and
+ * ".bak") ending. Nothing hidden, nothing leading out of the folder.
+ */
+bool IsModStoragePath(const std::string &relative)
+{
+    if (relative.empty() || relative.size() > kMaxModPathLength)
+        return false;
+    std::vector<std::string> segments;
+    std::size_t start = 0;
+    for (;;) {
+        const std::size_t slash = relative.find('/', start);
+        segments.push_back(relative.substr(start, slash == std::string::npos ? std::string::npos : slash - start));
+        if (slash == std::string::npos)
+            break;
+        start = slash + 1;
+    }
+    if (segments.size() < 2 || segments.size() > kMaxModPathSegments)
+        return false;
+    for (std::size_t i = 0; i + 1 < segments.size(); ++i) {
+        if (!IsPlainSegment(segments[i]))
+            return false;
+    }
+    const std::string &file = segments.back();
+    if (file.empty() || file.size() > 100 || file[0] == '.')
+        return false;
+    return std::all_of(file.begin(), file.end(), [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '-' || c == '.';
+    });
+}
+
 } // namespace
 
-std::string Library::InstallModStorage(const std::string &zipPath, const std::string &game,
-                                       const std::string &playthrough, std::string *summary)
+std::string Library::PlaythroughFolder(const std::string &game, const std::string &playthrough,
+                                       std::string *folder) const
 {
     if (!IsPlainSegment(game) || !IsPlainSegment(playthrough))
         return "Unknown game or playthrough.";
-    const std::string target = ModStorageRoot() + "/" + game + "/" + playthrough;
+    *folder = ModStorageRoot() + "/" + game + "/" + playthrough;
+    return std::string();
+}
 
-    ZipReader zip;
-    std::string error = zip.Open(zipPath);
-    if (!error.empty())
-        return "The upload is " + error + ".";
-    std::vector<std::string> names;
-    names.reserve(zip.Entries().size());
-    for (const ZipEntry &entry : zip.Entries())
-        names.push_back(entry.directory ? entry.name + (entry.name.empty() || entry.name.back() != '/' ? "/" : "")
-                                        : entry.name);
-    std::vector<std::string> relative;
-    error = PlanModStorageArchive(names, &relative);
+std::string Library::BeginModStorageUpload(const std::string &game, const std::string &playthrough)
+{
+    std::string target;
+    std::string error = PlaythroughFolder(game, playthrough, &target);
     if (!error.empty())
         return error;
-
-    // What will be unpacked: total size, file count and the mod folders it replaces.
-    std::uint64_t total = 0;
-    std::size_t files   = 0;
-    std::vector<std::string> mods;
-    for (std::size_t i = 0; i < relative.size(); ++i) {
-        if (relative[i].empty())
-            continue;
-        total += zip.Entries()[i].size;
-        ++files;
-        const std::string mod = relative[i].substr(0, relative[i].find('/'));
-        if (std::find(mods.begin(), mods.end(), mod) == mods.end())
-            mods.push_back(mod);
-    }
-
+    // A staging folder left by an interrupted upload is started afresh.
+    const std::string staging = target + "/" + kStagingFolder;
     std::error_code ec;
-    fs::create_directories(target, ec);
-    if (ec)
-        return "Could not create the playthrough folder: " + ec.message();
-    const std::uint64_t free = FreeBytesAt(target);
-    if (free < total + kSpareBytes)
-        return "Not enough free space: the files need " + Megabytes(total) + ", " + Megabytes(free) + " are free.";
-
-    // Unpack beside the target first, so a failure leaves the current data as it was.
-    const std::string staging = target + "/.webmon-incoming";
     fs::remove_all(staging, ec);
     ec.clear();
-    for (std::size_t i = 0; i < relative.size(); ++i) {
-        if (relative[i].empty())
-            continue;
-        const fs::path destination = staging + "/" + relative[i];
-        fs::create_directories(destination.parent_path(), ec);
-        const std::string extractError = ec ? ec.message() : zip.Extract(zip.Entries()[i].index, destination.string());
-        if (!extractError.empty()) {
-            fs::remove_all(staging, ec);
-            return "Could not unpack " + relative[i] + ": " + extractError + ".";
+    fs::create_directories(staging, ec);
+    if (ec)
+        return "Could not prepare the playthrough folder: " + ec.message() + ".";
+    return std::string();
+}
+
+std::string Library::ModStorageUploadPath(const std::string &game, const std::string &playthrough,
+                                          const std::string &relative, std::uint64_t size, std::string *path)
+{
+    std::string target;
+    std::string error = PlaythroughFolder(game, playthrough, &target);
+    if (!error.empty())
+        return error;
+    if (!IsModStoragePath(relative))
+        return "Not a mod data path: " + relative + " (expected <mod folder>/<file>, with plain names).";
+    const std::string staging = target + "/" + kStagingFolder;
+    std::error_code ec;
+    if (!fs::is_directory(staging, ec))
+        return "No upload in progress for this playthrough.";
+    const std::uint64_t free = FreeBytesAt(staging);
+    if (free != 0 && free < size + kSpareBytes)
+        return "Not enough space: " + Megabytes(free) + " free.";
+    const fs::path destination = staging + "/" + relative;
+    fs::create_directories(destination.parent_path(), ec);
+    if (ec)
+        return "Could not create the folder for " + relative + ": " + ec.message() + ".";
+    *path = destination.string();
+    return std::string();
+}
+
+std::string Library::FinishModStorageUpload(const std::string &game, const std::string &playthrough,
+                                            std::string *summary)
+{
+    std::string target;
+    std::string error = PlaythroughFolder(game, playthrough, &target);
+    if (!error.empty())
+        return error;
+    const std::string staging = target + "/" + kStagingFolder;
+
+    // What arrived: the mod folders, file count and size.
+    std::vector<std::string> mods;
+    std::uint64_t total = 0;
+    std::size_t files   = 0;
+    std::error_code ec;
+    for (fs::directory_iterator it(staging, ec), end; !ec && it != end; it.increment(ec)) {
+        if (it->is_directory(ec))
+            mods.push_back(it->path().filename().string());
+    }
+    for (fs::recursive_directory_iterator it(staging, ec), end; !ec && it != end; it.increment(ec)) {
+        if (it->is_regular_file(ec)) {
+            total += it->file_size(ec);
+            ++files;
         }
     }
+    ec.clear();
+    if (mods.empty() || files == 0) {
+        fs::remove_all(staging, ec);
+        return "Nothing was uploaded.";
+    }
+    std::sort(mods.begin(), mods.end());
 
-    // Swap each mod folder in.
+    // Swap each mod folder in; mods the upload did not include are left alone.
     for (const std::string &mod : mods) {
         const std::string current = target + "/" + mod;
         fs::remove_all(current, ec);
@@ -606,10 +664,19 @@ std::string Library::InstallModStorage(const std::string &zipPath, const std::st
     std::string modList;
     for (const std::string &mod : mods)
         modList += (modList.empty() ? "" : ", ") + mod;
-    *summary = "Unpacked " + std::to_string(files) + (files == 1 ? " file (" : " files (") + Megabytes(total) + ") into " + modList + " of " +
-               game + " playthrough " + playthrough + ".";
+    *summary = "Stored " + std::to_string(files) + (files == 1 ? " file (" : " files (") + Megabytes(total) +
+               ") in " + modList + " of " + game + " playthrough " + playthrough + ".";
     std::printf("[Webmon] %s\n", summary->c_str());
     return std::string();
+}
+
+void Library::AbortModStorageUpload(const std::string &game, const std::string &playthrough)
+{
+    std::string target;
+    if (!PlaythroughFolder(game, playthrough, &target).empty())
+        return;
+    std::error_code ec;
+    fs::remove_all(target + "/" + kStagingFolder, ec);
 }
 
 std::vector<GameSaveFile> Library::GameSaves()

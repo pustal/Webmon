@@ -57,10 +57,14 @@ local LIST_KIND = { rom = "rom", sav = "sav", mod = "mod", cart = "cart", requir
 local PANEL_START_SECONDS = 10   -- info panel shown at start
 local MEMORY_CHECK_SECONDS = 1   -- how often the process size is checked
 local MEMORY_GROWTH_MB = 48      -- full collection after this much growth since the last one
+local MEMORY_GROWTH_MAX_MB = 384 -- ... a limit that doubles up to this while collections free little
 local MEMORY_LOW_MB = 160        -- ... or when the TV has less than this available
 local MEMORY_LOW_REPEAT_SECONDS = 5
+local MEMORY_LOW_REPEAT_MAX_SECONDS = 60 -- ... an interval that doubles up to this while they free little
+local MEMORY_USEFUL_MB = 16      -- a collection freeing less than this was not worth its pause
 local MEMORY_CRITICAL_MB = 130   -- still under this after a collection: critical
 local MEMORY_CRITICAL_TIMES = 3  -- ... this many times in a row: offer a fresh start
+local PERF_LOG_SECONDS = 15      -- how often frame rate and clean-up time are logged
 local RESTART_COUNTDOWN_SECONDS = 15
 local RESTART_SNOOZE_SECONDS = 120 -- after Back, how long before offering again
 local REFRESH_SECONDS = 3        -- picker list refresh while open
@@ -99,6 +103,7 @@ local MENU = {
   { label = "Colours", key = "2" },
   { label = "Game speed slower / faster  (Left / Right)", left = "0", right = "1" },
   { label = "Mod manager", key = "f10", close = true },
+  { label = "Voxel debug overlay: timings (PotatoVoxel)", key = "f9", close = true },
   { label = "Quit Webmon", run = "quit" },
 }
 
@@ -153,10 +158,23 @@ local function sideMenu(direction)
   if key then sendKey(key) end
 end
 
+-- Frame timing for the log: frames and the slowest one since the last line,
+-- and the time spent in the clean-ups below.
+local perf = {
+  frames = 0,
+  worstMs = 0,
+  collectMs = 0,
+  collections = 0,
+  since = nil,
+  described = false, -- renderer, window and JIT logged once
+}
+
 local memory = {
   checkIn = 0,
   lastCollectMb = nil, -- process size right after the last full collection
   lastLowCollect = -math.huge,
+  growthLimitMb = MEMORY_GROWTH_MB,             -- current growth trigger (adaptive)
+  lowRepeatSeconds = MEMORY_LOW_REPEAT_SECONDS, -- current low-memory interval (adaptive)
   peakMb = 0,
   criticalCount = 0,
   restartIn = nil,          -- seconds left on the fresh-start countdown, when shown
@@ -515,16 +533,34 @@ local function manageMemory(dt, now)
   local processMb, availableMb = webmon.memory()
   if processMb <= 0 then return end
   memory.lastCollectMb = memory.lastCollectMb or processMb
-  local grew = processMb - memory.lastCollectMb >= MEMORY_GROWTH_MB
+  -- A full collection pauses the game (long on a big heap), so both triggers
+  -- back off while collections free little: in steady 3D play the TV often
+  -- sits under MEMORY_LOW_MB with nothing to free. Near the critical level
+  -- the base interval always applies.
+  local critical = availableMb > 0 and availableMb < MEMORY_CRITICAL_MB
+  local lowInterval = critical and MEMORY_LOW_REPEAT_SECONDS or memory.lowRepeatSeconds
+  local grew = processMb - memory.lastCollectMb >= memory.growthLimitMb
   local low = availableMb > 0 and availableMb < MEMORY_LOW_MB
-    and now - memory.lastLowCollect >= MEMORY_LOW_REPEAT_SECONDS
+    and now - memory.lastLowCollect >= lowInterval
   if grew or low then
+    local started = love.timer.getTime()
     collectgarbage("collect")
+    local pauseMs = (love.timer.getTime() - started) * 1000
+    perf.collectMs = perf.collectMs + pauseMs
+    perf.collections = perf.collections + 1
     local afterMb, afterAvailableMb = webmon.memory()
+    local freedMb = processMb - afterMb
     memory.lastCollectMb = afterMb
     if low then memory.lastLowCollect = now end
-    print(string.format("[Webmon] memory: collected (%s), %d -> %d MB, TV available %d -> %d MB",
-      low and "TV low" or "grew", processMb, afterMb, availableMb, afterAvailableMb))
+    if freedMb < MEMORY_USEFUL_MB then
+      if grew then memory.growthLimitMb = math.min(memory.growthLimitMb * 2, MEMORY_GROWTH_MAX_MB) end
+      if low then memory.lowRepeatSeconds = math.min(memory.lowRepeatSeconds * 2, MEMORY_LOW_REPEAT_MAX_SECONDS) end
+    else
+      memory.growthLimitMb = MEMORY_GROWTH_MB
+      memory.lowRepeatSeconds = MEMORY_LOW_REPEAT_SECONDS
+    end
+    print(string.format("[Webmon] memory: collected (%s) in %d ms, %d -> %d MB, TV available %d -> %d MB",
+      low and "TV low" or "grew", math.floor(pauseMs + 0.5), processMb, afterMb, availableMb, afterAvailableMb))
     -- Still critical after collecting, several times in a row: offer a fresh start.
     if afterAvailableMb > 0 and afterAvailableMb < MEMORY_CRITICAL_MB then
       memory.criticalCount = memory.criticalCount + 1
@@ -542,6 +578,42 @@ local function manageMemory(dt, now)
     memory.peakMb = processMb
     print(string.format("[Webmon] memory: new peak %d MB, TV available %d MB", processMb, availableMb))
   end
+end
+
+-- Logs once what the game runs on: the GPU driver, the window and drawing
+-- size, and whether LuaJIT compiles (interpreted Lua is several times slower).
+local function describeRenderer()
+  perf.described = true
+  local name, version, vendor, device = "?", "?", "?", "?"
+  if love.graphics.getRendererInfo then
+    local ok, a, b, c, d = pcall(love.graphics.getRendererInfo)
+    if ok then name, version, vendor, device = tostring(a), tostring(b), tostring(c), tostring(d) end
+  end
+  local width, height = love.graphics.getDimensions()
+  local pixelWidth, pixelHeight = width, height
+  if love.graphics.getPixelDimensions then
+    local w, h = love.graphics.getPixelDimensions()
+    pixelWidth, pixelHeight = w or width, h or height
+  end
+  local jitText = "no LuaJIT"
+  if jit then
+    jitText = tostring(jit.version) .. " " .. tostring(jit.arch) .. ", JIT " .. (jit.status() and "on" or "OFF")
+  end
+  print(string.format("[Webmon] renderer: %s %s (%s, %s); window %dx%d, drawing %dx%d; %s",
+    name, version, vendor, device, width, height, pixelWidth, pixelHeight, jitText))
+end
+
+-- Counts frames and logs the frame rate every PERF_LOG_SECONDS.
+local function trackFrames(dt, now)
+  if not perf.described then describeRenderer() end
+  perf.since = perf.since or now
+  perf.frames = perf.frames + 1
+  perf.worstMs = math.max(perf.worstMs, dt * 1000)
+  local elapsed = now - perf.since
+  if elapsed < PERF_LOG_SECONDS then return end
+  print(string.format("[Webmon] perf: %.1f fps, slowest frame %d ms, %d clean-ups took %d ms",
+    perf.frames / elapsed, math.floor(perf.worstMs + 0.5), perf.collections, math.floor(perf.collectMs + 0.5)))
+  perf.frames, perf.worstMs, perf.collectMs, perf.collections, perf.since = 0, 0, 0, 0, now
 end
 
 -- Per-frame work, from the love.graphics.present hook: timers, the panel key,
@@ -565,6 +637,7 @@ local function beforePresent()
       panel.hideIn = nil
     end
   end
+  trackFrames(dt, now)
   manageMemory(dt, now)
   if memory.restartIn then
     memory.restartIn = memory.restartIn - dt

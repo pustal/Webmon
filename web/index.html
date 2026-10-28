@@ -109,16 +109,17 @@
         the mod starts a new cache and the old one stays behind. Delete the ones you no longer need; the newest is
         usually the one in use. A deleted cache is rebuilt when needed.</p>
       <p class="muted">A cache can also be built on a computer (LÖVE 11.5 with the same game release, mod version and
-        ROM) and uploaded here: zip the playthrough folder from the computer's
-        <code>mod_storage/&lt;game&gt;/</code> (or the mod folders inside it) and use <b>Upload .zip</b> on the playthrough
-        you play on the TV. Each mod folder in the zip replaces the one there. Restart Webmon afterwards.</p>
+        ROM) and sent here: use <b>Upload folder</b> on the playthrough you play on the TV and choose the computer's
+        playthrough folder (in <code>mod_storage/&lt;game&gt;/</code>) or a mod folder inside it. Each mod folder you send
+        replaces that mod's data on the TV; other mods are kept. Restart Webmon afterwards.</p>
       <div class="row"><button id="mod-storage-refresh" class="secondary">Refresh</button>
         <span id="mod-storage-note" class="muted"></span></div>
       <div id="mod-upload-box" class="hidden">
         <p id="mod-upload-text" class="muted"></p>
         <progress id="mod-upload-progress" max="1" value="0"></progress>
+        <div class="row"><button id="mod-upload-stop" class="secondary hidden">Stop</button></div>
       </div>
-      <input id="mod-upload-input" type="file" accept=".zip" class="hidden">
+      <input id="mod-upload-input" type="file" webkitdirectory multiple class="hidden">
       <table><thead><tr><th>Game</th><th>Playthrough</th><th>Size</th><th>Last changed</th><th></th></tr></thead>
         <tbody id="mod-storage-table"></tbody></table>
     </section>
@@ -453,7 +454,7 @@ async function refreshModStorage() {
     row.appendChild(el("td", formatBytes(folder.bytes) || "0 B"));
     row.appendChild(el("td", folder.modified ? new Date(folder.modified * 1000).toLocaleString() : ""));
     const cell = el("td");
-    cell.appendChild(actionButton("Upload .zip", () => chooseModArchive(folder.game, folder.playthrough)));
+    cell.appendChild(actionButton("Upload folder", () => chooseModFolder(folder.game, folder.playthrough)));
     cell.appendChild(actionButton("Delete", async () => {
       const warning = folder.newest ? " This is the newest one, probably the playthrough you are using." : "";
       if (!confirm("Delete the mod data of " + folder.game + " playthrough " + folder.playthrough + "?" + warning)) return;
@@ -465,48 +466,175 @@ async function refreshModStorage() {
   }
 }
 
-/** The playthrough the next chosen .zip goes to. @type {{game: string, playthrough: string}|null} */
-let modArchiveTarget = null;
+/** Files sent to the TV at once. */
+const PARALLEL_UPLOADS = 3;
 
-/** Asks for a .zip for one playthrough. @param {string} game @param {string} playthrough */
-function chooseModArchive(game, playthrough) {
-  modArchiveTarget = { game, playthrough };
+/** The playthrough the next chosen folder goes to. @type {{game: string, playthrough: string}|null} */
+let modFolderTarget = null;
+/** Set by the Stop button; the running upload stops and is cancelled. */
+let modUploadStopRequested = false;
+
+/** Asks for a folder for one playthrough. @param {string} game @param {string} playthrough */
+function chooseModFolder(game, playthrough) {
+  modFolderTarget = { game, playthrough };
   $("mod-upload-input").value = "";
   $("mod-upload-input").click();
 }
 
-/** Uploads the chosen .zip; the TV unpacks it into the playthrough chosen with chooseModArchive(). */
-function uploadModArchive() {
-  const file = ($("mod-upload-input").files || [])[0];
-  const target = modArchiveTarget;
-  if (!file || !target) return;
-  if (!confirm("Unpack " + file.name + " into " + target.game + " playthrough " + target.playthrough
-               + "? Each mod folder in it replaces the one there.")) return;
+/** True for a gen1recomp playthrough id (32 hexadecimal digits). @param {string} text */
+function looksLikePlaythroughId(text) {
+  return /^[0-9a-fA-F]{32}$/.test(text);
+}
+
+/**
+ * Where each chosen file goes below the TV's playthrough folder ("<mod>/<file>").
+ * The chosen folder may be mod_storage, a game folder holding one playthrough,
+ * a playthrough folder or a mod folder; the levels the target already gives
+ * are dropped. Hidden and system files are skipped.
+ * @param {File[]} files
+ * @returns {{jobs: Array<{file: File, path: string}>, mods: string[], skipped: number, error: string}}
+ */
+function planModFolder(files) {
+  /** @type {Array<{file: File, segments: string[]}>} */
+  let entries = [];
+  let skipped = 0;
+  for (const file of files) {
+    const segments = (file.webkitRelativePath || file.name).split("/").filter((part) => part !== "");
+    const name = segments[segments.length - 1] || "";
+    if (segments.some((part) => part.startsWith(".") || part === "__MACOSX") || name.endsWith(".tmp")) {
+      skipped++;
+      continue;
+    }
+    entries.push({ file, segments });
+  }
+  if (entries.length === 0) return { jobs: [], mods: [], skipped, error: "The folder has no files to send." };
+
+  /** True if every entry has at least `depth` segments and the same one at `level`. */
+  const share = (level, depth) => entries.every((entry) =>
+    entry.segments.length >= depth && entry.segments[level] === entries[0].segments[level]);
+  for (;;) {
+    if (!share(0, 2)) break;
+    const first = entries[0].segments[0];
+    const drop = first === "mod_storage" || looksLikePlaythroughId(first)
+      || (share(1, 3) && looksLikePlaythroughId(entries[0].segments[1]));
+    if (!drop) break;
+    entries = entries.map((entry) => ({ file: entry.file, segments: entry.segments.slice(1) }));
+  }
+  // A playthrough id below the mod level means a folder above one playthrough was chosen.
+  if (entries.some((entry) => entry.segments.length < 2
+                    || entry.segments.slice(0, -1).some((part) => looksLikePlaythroughId(part)))) {
+    return { jobs: [], mods: [], skipped, error: "Choose a playthrough folder (the one with the long id) or a mod "
+      + "folder inside it. A game folder with several playthroughs cannot be sent at once." };
+  }
+  const mods = [...new Set(entries.map((entry) => entry.segments[0]))].sort();
+  return { jobs: entries.map((entry) => ({ file: entry.file, path: entry.segments.join("/") })), mods, skipped, error: "" };
+}
+
+/**
+ * PUTs one file with progress.
+ * @param {string} url @param {File} file @param {(sent: number) => void} onProgress
+ * @returns {Promise<{ok: boolean, status: number, text: string}>}
+ */
+function putFile(url, file, onProgress) {
+  return new Promise((resolve) => {
+    const request = new XMLHttpRequest();
+    request.open("PUT", url);
+    request.setRequestHeader("X-Pin", pin);
+    request.upload.onprogress = (event) => onProgress(event.loaded);
+    request.onload = () => resolve({ ok: request.status >= 200 && request.status < 300, status: request.status,
+                                     text: request.responseText });
+    request.onerror = () => resolve({ ok: false, status: 0, text: "Connection to the TV lost." });
+    request.send(file);
+  });
+}
+
+/** @param {number} seconds */
+function formatDuration(seconds) {
+  if (!isFinite(seconds) || seconds < 0) return "...";
+  if (seconds < 90) return Math.round(seconds) + " s";
+  return Math.round(seconds / 60) + " min";
+}
+
+/** Sends the chosen folder to the playthrough picked with chooseModFolder(). */
+async function uploadModFolder() {
+  const target = modFolderTarget;
+  const plan = planModFolder(Array.from($("mod-upload-input").files || []));
+  $("mod-upload-input").value = "";
+  if (!target) return;
   const text = $("mod-upload-text");
   const progress = $("mod-upload-progress");
+  const stop = $("mod-upload-stop");
   $("mod-upload-box").classList.remove("hidden");
-  text.textContent = "Uploading " + file.name + "...";
-  progress.value = 0;
-  const request = new XMLHttpRequest();
-  request.open("PUT", "/api/mod-storage?game=" + encodeURIComponent(target.game)
-               + "&playthrough=" + encodeURIComponent(target.playthrough));
-  request.setRequestHeader("X-Pin", pin);
-  request.upload.onprogress = (event) => {
-    progress.value = event.total ? event.loaded / event.total : 0;
-    if (event.loaded === event.total) text.textContent = "Unpacking on the TV...";
+  if (plan.error) {
+    text.textContent = plan.error;
+    progress.classList.add("hidden");
+    return;
+  }
+  const totalBytes = plan.jobs.reduce((sum, job) => sum + job.file.size, 0);
+  if (!confirm("Send " + plan.jobs.length + " files (" + formatBytes(totalBytes) + ") to " + target.game
+               + " playthrough " + target.playthrough + "?\n\nThis replaces the TV's data of: " + plan.mods.join(", ")
+               + ". Other mods are kept.")) {
+    $("mod-upload-box").classList.add("hidden");
+    return;
+  }
+
+  let token;
+  try {
+    token = (await api("POST", "/api/mod-storage/upload?game=" + encodeURIComponent(target.game)
+                       + "&playthrough=" + encodeURIComponent(target.playthrough))).token;
+  } catch (error) {
+    text.textContent = "Failed: " + String(error.message || error);
+    return;
+  }
+
+  progress.classList.remove("hidden");
+  stop.classList.remove("hidden");
+  modUploadStopRequested = false;
+  const started = performance.now();
+  const inFlight = new Array(PARALLEL_UPLOADS).fill(0);
+  let finishedBytes = 0, done = 0, next = 0, failure = "";
+  const render = () => {
+    const sent = finishedBytes + inFlight.reduce((a, b) => a + b, 0);
+    const elapsed = (performance.now() - started) / 1000;
+    const rate = elapsed > 1 ? sent / elapsed : 0;
+    progress.value = totalBytes ? sent / totalBytes : done / plan.jobs.length;
+    text.textContent = "Sending " + done + " of " + plan.jobs.length + " files, " + formatBytes(sent) + " of "
+      + formatBytes(totalBytes) + (rate ? ", about " + formatDuration((totalBytes - sent) / rate) + " left" : "") + ".";
   };
-  request.onload = () => {
-    let message = request.responseText;
-    try { message = JSON.parse(request.responseText).message; } catch (e) { /* plain text error */ }
-    text.textContent = request.status >= 200 && request.status < 300
-      ? message + " Restart Webmon on the TV to use it."
-      : "Failed: " + (message || "HTTP " + request.status);
-    progress.value = 1;
-    refreshModStorage();
-    refreshStatus();
+  /** @param {number} worker */
+  const runWorker = async (worker) => {
+    while (!modUploadStopRequested && !failure && next < plan.jobs.length) {
+      const job = plan.jobs[next++];
+      const url = "/api/mod-storage/upload?token=" + token + "&path=" + encodeURIComponent(job.path);
+      const onProgress = (sent) => { inFlight[worker] = sent; render(); };
+      let result = await putFile(url, job.file, onProgress);
+      if (!result.ok && result.status === 0) result = await putFile(url, job.file, onProgress); // one retry
+      inFlight[worker] = 0;
+      if (!result.ok) { failure = result.text || ("HTTP " + result.status); break; }
+      finishedBytes += job.file.size;
+      done++;
+      render();
+    }
   };
-  request.onerror = () => { text.textContent = "The connection to the TV failed."; };
-  request.send(file);
+  await Promise.all(Array.from({ length: PARALLEL_UPLOADS }, (_, worker) => runWorker(worker)));
+  stop.classList.add("hidden");
+
+  if (failure || modUploadStopRequested) {
+    try { await api("DELETE", "/api/mod-storage/upload?token=" + token); } catch (error) { /* already gone */ }
+    text.textContent = (failure ? "Failed: " + failure : "Stopped.") + " Nothing on the TV was changed.";
+    return;
+  }
+  text.textContent = "Putting the files in place...";
+  try {
+    const reply = await api("POST", "/api/mod-storage/upload/finish?token=" + token);
+    text.textContent = reply.message + (plan.skipped ? " Skipped " + plan.skipped + " hidden or temporary files." : "")
+      + " Restart Webmon on the TV to use it.";
+  } catch (error) {
+    text.textContent = "Failed: " + String(error.message || error);
+  }
+  progress.value = 1;
+  refreshModStorage();
+  refreshStatus();
 }
 
 // ---- Game saves ---------------------------------------------------------------------
@@ -705,7 +833,8 @@ $("pin").addEventListener("keydown", (event) => { if (event.key === "Enter") con
 $("download-latest").addEventListener("click", () => startDownload());
 $("upload-button").addEventListener("click", uploadSelected);
 $("mod-storage-refresh").addEventListener("click", refreshModStorage);
-$("mod-upload-input").addEventListener("change", uploadModArchive);
+$("mod-upload-input").addEventListener("change", uploadModFolder);
+$("mod-upload-stop").addEventListener("click", () => { modUploadStopRequested = true; });
 $("game-saves-refresh").addEventListener("click", refreshGameSaves);
 $("swap-create").addEventListener("click", async () => {
   if (!confirm("Create a " + $("swap-size").value + " MB swap file on the USB drive? This takes a few minutes.")) return;

@@ -164,15 +164,26 @@ public:
     std::string ModStorageRoot() const;
 
     /**
-     * Unpacks the .zip @p zipPath into mod_storage/<@p game>/<@p playthrough>/
-     * (see PlanModStorageArchive() for the layouts accepted). Each mod folder
-     * in the archive replaces the one already there; other mods are left
-     * alone. Unpacking goes to a staging folder first, so a failure changes nothing.
-     * @param[out] summary what was unpacked, for the page
-     * @return Empty on success, otherwise a message for the page.
+     * Mod data uploaded file by file (a folder chosen on a computer, such as a
+     * voxel map cache built there) for mod_storage/<@p game>/<@p playthrough>/.
+     * Files collect in a staging folder; Finish swaps each uploaded mod folder
+     * in (replacing that mod's data, leaving other mods alone), Abort drops them.
+     * Each returns empty on success, otherwise a message for the page.
      */
-    std::string InstallModStorage(const std::string &zipPath, const std::string &game, const std::string &playthrough,
-                                  std::string *summary);
+    std::string BeginModStorageUpload(const std::string &game, const std::string &playthrough);
+
+    /**
+     * Where to write the uploaded file @p relative ("<mod id>/<path>", checked
+     * against the game's storage naming rules) of @p size bytes; creates its folder.
+     */
+    std::string ModStorageUploadPath(const std::string &game, const std::string &playthrough,
+                                     const std::string &relative, std::uint64_t size, std::string *path);
+
+    /** @param[out] summary what was stored, for the page */
+    std::string FinishModStorageUpload(const std::string &game, const std::string &playthrough,
+                                       std::string *summary);
+
+    void AbortModStorageUpload(const std::string &game, const std::string &playthrough);
 
     /** The game's own save files, newest first. */
     std::vector<GameSaveFile> GameSaves();
@@ -184,6 +195,9 @@ public:
     std::string GameSavePath(const std::string &relative);
 
 private:
+    /** mod_storage/<game>/<playthrough> after checking both are plain names. */
+    std::string PlaythroughFolder(const std::string &game, const std::string &playthrough, std::string *folder) const;
+
     void PlaceGameData();
     void AddFolder(std::vector<LibraryFile> &out, FileKind kind, const std::string &folder, const std::string &source,
                    bool removable);

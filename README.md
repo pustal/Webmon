@@ -61,7 +61,7 @@ network that send the PIN. It shows:
   TV, or download it to your computer;
 - **Memory for heavy mods**: the TV's memory, and an optional swap file (below);
 - **Mod data**: each game's per-playthrough mod folders, with their size, to
-  delete old map caches or upload one built on a computer (below);
+  delete old map caches or send one built on a computer (below);
 - **Game saves**: download the game's save slots and the `.sav` battery saves
   it exported;
 - **Files**: upload, list, download and delete the game, ROMs, saves, mod zips,
@@ -100,8 +100,13 @@ lot of 3D data at once. Webmon helps in two ways:
 - **Prompt clean-up.** LÖVE objects (meshes, image data) hold memory that Lua's
   garbage collector does not see, so it would wait too long to free them.
   Webmon checks the process size every second and runs a full clean-up after
-  it grows by 48 MB, or when the TV has less than 160 MB available. The log
-  (`stdout.log`) records each clean-up and every new peak.
+  it grows by 48 MB, or when the TV has less than 160 MB available. A full
+  clean-up briefly pauses the game, so while they free little (steady 3D play
+  often keeps the TV under 160 MB with nothing to free) they back off, up to
+  once a minute; near the critical level below they stay every 5 seconds.
+  The log (`stdout.log`) records each clean-up with its pause and every new
+  peak, plus the frame rate every 15 seconds and, once, the GPU driver, the
+  window size and whether LuaJIT's compiler is on.
 - **A fresh start before the TV freezes.** When the TV still has less than
   130 MB available after three clean-ups in a row, Webmon shows a 15-second
   countdown, then quits the game cleanly and starts again as a new process,
@@ -135,14 +140,15 @@ uploaded:
 
 1. Run the same gen1recomp release with LÖVE 11.5 on the computer, import the
    same ROM, install the same mod version and build the cache there.
-2. Zip the playthrough folder from the computer's
-   `mod_storage/<game>/` (in LÖVE's save folder for `pokemon-love2d`: on macOS
-   `~/Library/Application Support/LOVE/pokemon-love2d`, on Windows
-   `%APPDATA%\LOVE\pokemon-love2d`, on Linux `~/.local/share/love/pokemon-love2d`).
-   Zipping the mod folders inside it works too.
-3. On the upload page, use **Upload .zip** on the playthrough you play on the
-   TV. Each mod folder in the zip replaces that mod's folder there (other mods
-   are kept), then restart Webmon.
+2. On the upload page, use **Upload folder** on the playthrough you play on
+   the TV and choose the computer's playthrough folder, in `mod_storage/<game>/`
+   of LÖVE's save folder for `pokemon-love2d` (macOS:
+   `~/Library/Application Support/LOVE/pokemon-love2d`, Windows:
+   `%APPDATA%\LOVE\pokemon-love2d`, Linux: `~/.local/share/love/pokemon-love2d`).
+   A mod folder inside it works too. The page sends the files one by one; they
+   collect in a staging folder and only replace anything once all arrived.
+   Each mod folder sent replaces that mod's data on the TV; other mods are kept.
+3. Restart Webmon.
 
 If anything differs (game release, mod version, ROM), the mod treats the
 cache as stale and builds it again.
@@ -172,6 +178,7 @@ remote or controller the game's keyboard-only shortcuts:
 | Colours | 2 |
 | Game speed slower / faster | 0 / 1 |
 | Mod manager | F10 |
+| Voxel debug overlay (PotatoVoxel's timings) | F9 |
 | Quit Webmon | (asks for a second OK) |
 
 Up/Down choose, OK runs it, Left/Right adjust the "/" entries, Back (B), 1 or
@@ -212,7 +219,6 @@ Tests that run without a TV:
 | `src/webos/Platform.cpp` | Data folder, logs, the remote mapped onto the game's keys, the info panel key |
 | `src/webos/Usb.cpp` | Root detection (Homebrew Channel exec), USB drives, the `Webmon` folder |
 | `src/webos/Library.cpp` | Where files live, linking the USB `Webmon` folder, the game's data folder (`XDG_DATA_HOME`), file lists including RetroArch folders, mod data and game saves |
-| `src/webos/ZipReader.cpp` | Reading uploaded mod data archives ([miniz](https://github.com/richgel999/miniz)) and where their files go |
 | `src/webos/Downloader.cpp` | Downloads gen1recomp releases with the TV's curl |
 | `src/webos/Memory.cpp`, `src/webos/Swap.cpp` | Memory figures; the optional USB swap file (root) |
 | `src/server/WebServer.cpp`, `web/index.html` | The upload page (cpp-httplib) |

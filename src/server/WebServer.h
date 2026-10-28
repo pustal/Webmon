@@ -22,7 +22,10 @@
  *   DELETE /api/swap                                remove it
  *   GET    /api/mod-storage                         the game's mod data per playthrough
  *   DELETE /api/mod-storage?game=<g>&playthrough=<id>   delete one
- *   PUT    /api/mod-storage?game=<g>&playthrough=<id>   body: a .zip unpacked into it
+ *   POST   /api/mod-storage/upload?game=<g>&playthrough=<id>   start a folder upload -> {token}
+ *   PUT    /api/mod-storage/upload?token=<t>&path=<mod>/<file>   body: one file of it
+ *   POST   /api/mod-storage/upload/finish?token=<t>   swap the uploaded mod folders in
+ *   DELETE /api/mod-storage/upload?token=<t>          cancel (nothing changes)
  *   GET    /api/files/content?kind=<k>&path=<path>      a listed file, as a download
  *   GET    /api/game-saves                              the game's own saves and exports
  *   GET    /api/game-saves/content?path=<relative>      one of them, as a download
@@ -89,7 +92,16 @@ public:
     static std::string LoadOrCreatePin(const std::string &dataFolder);
 
 private:
+    /** The mod data folder upload in progress (empty token: none). */
+    struct ModUpload {
+        std::string game;
+        std::string playthrough;
+        std::string token;
+    };
+
     void RegisterRoutes();
+    /** The running upload if @p token is its token, else an empty one. */
+    ModUpload CurrentModUpload(const std::string &token);
     std::string StatusJson();
 
     Library &library_;
@@ -107,7 +119,8 @@ private:
     mutable std::mutex mutex_;
     std::string pendingPick_;
     std::string lastEvent_;
-    std::mutex modUploadMutex_; ///< One mod data archive is unpacked at a time
+    std::mutex modUploadMutex_; ///< Guards modUpload_
+    ModUpload modUpload_;
 };
 
 } // namespace webmon

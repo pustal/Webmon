@@ -95,4 +95,16 @@ clock = clock + 130                           -- after the snooze
 for _ = 1, 4 do frame(6) end
 for _ = 1, 20 do frame(1) end                 -- countdown runs out
 assert(freshRequested and quitWith == "restart", "fresh start requested")
+-- Low (not critical) memory that collections cannot free: clean-ups back off
+-- (5, 10, 20, 40 s ...) instead of pausing the game every 5 seconds.
+local collections = 0
+local realCollect = collectgarbage
+collectgarbage = function(what, ...)
+  if what == "collect" then collections = collections + 1 end
+  return realCollect(what, ...)
+end
+memoryNow = { 900, 150 }
+for _ = 1, 120 do frame(1) end
+collectgarbage = realCollect
+assert(collections >= 1 and collections <= 6, "backed off (24 without): " .. collections .. " clean-ups in 2 minutes")
 print("bridge test ok")

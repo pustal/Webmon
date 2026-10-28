@@ -166,9 +166,6 @@ bool SendFile(httplib::Response &res, const std::string &path, const std::string
     return true;
 }
 
-/** Largest mod data archive accepted (2 GB: files past that need large-file support on the TV). */
-constexpr std::uint64_t kMaxModArchiveBytes = 2000ull * 1024ull * 1024ull;
-
 const char *UsbLinkName(UsbLink link)
 {
     switch (link) {
@@ -256,6 +253,14 @@ void WebServer::SetPendingPick(const std::string &kind)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     pendingPick_ = kind;
+}
+
+WebServer::ModUpload WebServer::CurrentModUpload(const std::string &token)
+{
+    std::lock_guard<std::mutex> lock(modUploadMutex_);
+    if (modUpload_.token.empty() || token != modUpload_.token)
+        return ModUpload{};
+    return modUpload_;
 }
 
 std::string WebServer::StatusJson()
@@ -484,50 +489,89 @@ void WebServer::RegisterRoutes()
         Ok(res, "Deleted.");
     });
 
-    // A .zip of mod data (such as a voxel map cache built on a computer) for one playthrough.
-    server.Put("/api/mod-storage", [this](const httplib::Request &req, httplib::Response &res,
-                                          const httplib::ContentReader &reader) {
+    // Mod data from a folder on a computer (such as a voxel map cache built there),
+    // file by file: begin, one PUT per file, then finish (or cancel).
+    server.Post("/api/mod-storage/upload", [this](const httplib::Request &req, httplib::Response &res) {
         const std::string game        = req.get_param_value("game");
         const std::string playthrough = req.get_param_value("playthrough");
-        std::uint64_t size            = 0;
-        if (!ContentLength(req, &size) || size == 0 || size > kMaxModArchiveBytes) {
-            Fail(res, 411, "The upload needs a size between 1 byte and 2000 MB.");
-            return;
-        }
-        std::unique_lock<std::mutex> busy(modUploadMutex_, std::try_to_lock);
-        if (!busy.owns_lock()) {
-            Fail(res, 409, "Another mod data upload is being unpacked. Try again when it is done.");
-            return;
-        }
-        // The archive goes beside the mod data, on the same drive, and is deleted once unpacked.
-        const std::string root = library_.ModStorageRoot();
-        std::error_code ec;
-        std::filesystem::create_directories(root, ec);
-        if (FreeBytes(root) < size * 2) {
-            Fail(res, 507, "Not enough free space for the archive and its unpacked files.");
-            return;
-        }
-        const std::string archive = root + "/.webmon-upload.zip";
-        std::string error = StreamBodyToFile(reader, archive, size);
-        std::string summary;
-        if (error.empty())
-            error = library_.InstallModStorage(archive, game, playthrough, &summary);
-        else
-            error = "Could not store the upload: " + error + ".";
-        unlink(archive.c_str());
+        std::lock_guard<std::mutex> lock(modUploadMutex_);
+        // One upload at a time: a new one replaces one left unfinished.
+        if (!modUpload_.token.empty())
+            library_.AbortModStorageUpload(modUpload_.game, modUpload_.playthrough);
+        modUpload_ = ModUpload{};
+        const std::string error = library_.BeginModStorageUpload(game, playthrough);
         if (!error.empty()) {
-            std::fprintf(stderr, "[Webmon] mod data upload for %s/%s: %s\n", game.c_str(), playthrough.c_str(),
-                         error.c_str());
+            Fail(res, 400, error);
+            return;
+        }
+        std::random_device device;
+        char token[17];
+        std::snprintf(token, sizeof(token), "%08x%08x", device(), device());
+        modUpload_ = ModUpload{ game, playthrough, token };
+        res.set_content("{\"token\":" + json::Quote(token) + "}", kJsonType);
+    });
+
+    server.Put("/api/mod-storage/upload", [this](const httplib::Request &req, httplib::Response &res,
+                                                 const httplib::ContentReader &reader) {
+        const ModUpload upload = CurrentModUpload(req.get_param_value("token"));
+        if (upload.token.empty()) {
+            Fail(res, 409, "This upload is no longer running (another one started, or Webmon restarted).");
+            return;
+        }
+        const std::string relative = req.get_param_value("path");
+        std::uint64_t size         = 0;
+        if (!ContentLength(req, &size) || size > kMaxUploadBytes) {
+            Fail(res, 411, "The upload needs a size of at most 512 MB.");
+            return;
+        }
+        std::string path;
+        std::string error = library_.ModStorageUploadPath(upload.game, upload.playthrough, relative, size, &path);
+        if (error.empty()) {
+            const std::string temporary = path + ".part";
+            error = StreamBodyToFile(reader, temporary, size);
+            if (error.empty() && std::rename(temporary.c_str(), path.c_str()) != 0)
+                error = std::string("could not move it into place (") + std::strerror(errno) + ")";
+            if (!error.empty()) {
+                unlink(temporary.c_str());
+                error = "Could not store " + relative + ": " + error + ".";
+            }
+        }
+        if (!error.empty()) {
+            Fail(res, error.rfind("Not enough space", 0) == 0 ? 507 : 400, error);
+            return;
+        }
+        res.set_content("{\"ok\":true}", kJsonType);
+    });
+
+    server.Post("/api/mod-storage/upload/finish", [this](const httplib::Request &req, httplib::Response &res) {
+        std::lock_guard<std::mutex> lock(modUploadMutex_);
+        if (modUpload_.token.empty() || req.get_param_value("token") != modUpload_.token) {
+            Fail(res, 409, "This upload is no longer running.");
+            return;
+        }
+        std::string summary;
+        const std::string error = library_.FinishModStorageUpload(modUpload_.game, modUpload_.playthrough, &summary);
+        modUpload_ = ModUpload{};
+        if (!error.empty()) {
             Fail(res, 400, error);
             return;
         }
         // A running mod may still hold the old data in memory and write it back.
         restartSuggested_.store(true);
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<std::mutex> eventLock(mutex_);
             lastEvent_ = summary;
         }
         Ok(res, summary);
+    });
+
+    server.Delete("/api/mod-storage/upload", [this](const httplib::Request &req, httplib::Response &res) {
+        std::lock_guard<std::mutex> lock(modUploadMutex_);
+        if (!modUpload_.token.empty() && req.get_param_value("token") == modUpload_.token) {
+            library_.AbortModStorageUpload(modUpload_.game, modUpload_.playthrough);
+            modUpload_ = ModUpload{};
+        }
+        Ok(res, "Cancelled; nothing was changed.");
     });
 
     server.Get("/api/game-saves", [this](const httplib::Request &, httplib::Response &res) {
