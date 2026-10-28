@@ -7,7 +7,7 @@
 # or scripts/build-webos.sh for both.
 
 cmake_minimum_required(VERSION 3.21)
-project(Webmon VERSION 0.3.5 LANGUAGES C CXX)
+project(Webmon VERSION 0.3.6 LANGUAGES C CXX)
 
 set(WEBMON_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${WEBMON_ROOT}/cmake")

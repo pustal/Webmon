@@ -122,4 +122,33 @@ memoryNow = { 900, 150 }
 for _ = 1, 120 do frame(1) end
 collectgarbage = realCollect
 assert(collections >= 1 and collections <= 6, "backed off (24 without): " .. collections .. " clean-ups in 2 minutes")
+-- A voxel town: ~100 MB of garbage a second, plenty of TV memory, each forced
+-- clean-up stopping the game for 900 ms. The time budget keeps them to about
+-- one per 18 s instead of one a second.
+local slowCollections = 0
+collectgarbage = function(what, ...)
+  if what == "collect" then
+    slowCollections = slowCollections + 1
+    clock = clock + 0.9
+    memoryNow[1] = memoryNow[1] - 100
+  end
+  return realCollect(what, ...)
+end
+memoryNow = { 450, 400 }
+for _ = 1, 60 do
+  memoryNow[1] = memoryNow[1] + 100
+  frame(1)
+end
+collectgarbage = realCollect
+assert(slowCollections >= 2 and slowCollections <= 5, "time budget: " .. slowCollections .. " clean-ups in a minute")
+-- Near the critical level the budget does not apply.
+slowCollections = 0
+collectgarbage = function(what, ...)
+  if what == "collect" then slowCollections = slowCollections + 1; clock = clock + 0.9 end
+  return realCollect(what, ...)
+end
+memoryNow = { 900, 100 }
+for _ = 1, 30 do frame(1) end
+collectgarbage = realCollect
+assert(slowCollections >= 5, "critical: clean-ups every few seconds, got " .. slowCollections)
 print("bridge test ok")

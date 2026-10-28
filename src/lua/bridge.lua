@@ -70,6 +70,8 @@ local MEMORY_LOW_MB = 160        -- ... or when the TV has less than this availa
 local MEMORY_LOW_REPEAT_SECONDS = 5
 local MEMORY_LOW_REPEAT_MAX_SECONDS = 60 -- ... an interval that doubles up to this while they free little
 local MEMORY_USEFUL_MB = 16      -- a collection freeing less than this was not worth its pause
+local MEMORY_PAUSE_BUDGET = 0.05 -- forced clean-ups may take at most this share of play time
+                                 -- (a 900 ms one waits 18 s); Lua's own collector runs between
 local MEMORY_CRITICAL_MB = 130   -- still under this after a collection: critical
 local MEMORY_CRITICAL_TIMES = 3  -- ... this many times in a row: offer a fresh start
 local PERF_LOG_SECONDS = 15      -- how often frame rate and clean-up time are logged
@@ -238,6 +240,7 @@ local memory = {
   lastCollectMb = nil, -- process size right after the last full collection
   lastLowCollect = -math.huge,
   growthLimitMb = MEMORY_GROWTH_MB,             -- current growth trigger (adaptive)
+  nextAllowed = -math.huge,                     -- no forced clean-up before this (time budget)
   lowRepeatSeconds = MEMORY_LOW_REPEAT_SECONDS, -- current low-memory interval (adaptive)
   peakMb = 0,
   criticalCount = 0,
@@ -597,19 +600,28 @@ local function manageMemory(dt, now)
   local processMb, availableMb = webmon.memory()
   if processMb <= 0 then return end
   memory.lastCollectMb = memory.lastCollectMb or processMb
-  -- A full collection pauses the game (long on a big heap), so both triggers
-  -- back off while collections free little: in steady 3D play the TV often
-  -- sits under MEMORY_LOW_MB with nothing to free. Near the critical level
-  -- the base interval always applies.
+  -- A full collection stops the game (650-950 ms on a big heap in a voxel
+  -- town, where the game makes ~100 MB of garbage a second). So:
+  --  * forced clean-ups get a time budget: after one taking p ms the next
+  --    waits p / MEMORY_PAUSE_BUDGET; Lua's own incremental collector keeps
+  --    working in between without stopping the game;
+  --  * both triggers back off while collections free little (steady 3D play
+  --    often keeps the TV under MEMORY_LOW_MB with nothing to free);
+  --  * near the critical level neither applies: every few seconds, to keep
+  --    the TV from freezing.
   local critical = availableMb > 0 and availableMb < MEMORY_CRITICAL_MB
   local lowInterval = critical and MEMORY_LOW_REPEAT_SECONDS or memory.lowRepeatSeconds
   local grew = processMb - memory.lastCollectMb >= memory.growthLimitMb
   local low = availableMb > 0 and availableMb < MEMORY_LOW_MB
     and now - memory.lastLowCollect >= lowInterval
-  if grew or low then
+  local allowed = critical or now >= memory.nextAllowed
+  if (grew or low) and allowed then
+    local luaBeforeMb = collectgarbage("count") / 1024
     local started = love.timer.getTime()
     collectgarbage("collect")
     local pauseMs = (love.timer.getTime() - started) * 1000
+    local luaAfterMb = collectgarbage("count") / 1024
+    memory.nextAllowed = now + pauseMs / 1000 / MEMORY_PAUSE_BUDGET
     perf.collectMs = perf.collectMs + pauseMs
     perf.collections = perf.collections + 1
     local afterMb, afterAvailableMb = webmon.memory()
@@ -623,8 +635,9 @@ local function manageMemory(dt, now)
       memory.growthLimitMb = MEMORY_GROWTH_MB
       memory.lowRepeatSeconds = MEMORY_LOW_REPEAT_SECONDS
     end
-    print(string.format("[Webmon] memory: collected (%s) in %d ms, %d -> %d MB, TV available %d -> %d MB",
-      low and "TV low" or "grew", math.floor(pauseMs + 0.5), processMb, afterMb, availableMb, afterAvailableMb))
+    print(string.format("[Webmon] memory: collected (%s) in %d ms, %d -> %d MB (Lua heap %d -> %d MB), TV available %d -> %d MB",
+      low and "TV low" or "grew", math.floor(pauseMs + 0.5), processMb, afterMb,
+      math.floor(luaBeforeMb + 0.5), math.floor(luaAfterMb + 0.5), availableMb, afterAvailableMb))
     -- Still critical after collecting, several times in a row: offer a fresh start.
     if afterAvailableMb > 0 and afterAvailableMb < MEMORY_CRITICAL_MB then
       memory.criticalCount = memory.criticalCount + 1
@@ -675,9 +688,12 @@ local function trackFrames(dt, now)
   perf.worstMs = math.max(perf.worstMs, dt * 1000)
   local elapsed = now - perf.since
   if elapsed < PERF_LOG_SECONDS then return end
-  print(string.format("[Webmon] perf: %.1f fps, slowest frame %d ms, %d clean-ups took %d ms; JIT %s, %d traces, %d aborted",
+  local processMb, availableMb = webmon.memory()
+  print(string.format("[Webmon] perf: %.1f fps, slowest frame %d ms, %d clean-ups took %d ms; JIT %s, %d traces, %d aborted; "
+    .. "Webmon %d MB (Lua heap %d MB), TV available %d MB",
     perf.frames / elapsed, math.floor(perf.worstMs + 0.5), perf.collections, math.floor(perf.collectMs + 0.5),
-    jit and jit.status() and "on" or "off", compiler.traces, compiler.aborts))
+    jit and jit.status() and "on" or "off", compiler.traces, compiler.aborts,
+    processMb, math.floor(collectgarbage("count") / 1024 + 0.5), availableMb))
   compiler.traces, compiler.aborts = 0, 0
   perf.frames, perf.worstMs, perf.collectMs, perf.collections, perf.since = 0, 0, 0, 0, now
 end

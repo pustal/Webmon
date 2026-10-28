@@ -101,9 +101,12 @@ lot of 3D data at once. Webmon helps in two ways:
   garbage collector does not see, so it would wait too long to free them.
   Webmon checks the process size every second and runs a full clean-up after
   it grows by 48 MB, or when the TV has less than 160 MB available. A full
-  clean-up briefly pauses the game, so while they free little (steady 3D play
-  often keeps the TV under 160 MB with nothing to free) they back off, up to
-  once a minute; near the critical level below they stay every 5 seconds.
+  clean-up stops the game while it runs (650-950 ms in a voxel town, where the
+  game makes about 100 MB of garbage a second), so they get a time budget: at
+  most 5% of play time (after a 900 ms one, the next waits 18 seconds), with
+  Lua's own collector working in between without stopping the game. They also
+  back off while they free little. Near the critical level below neither
+  applies: they run every 5 seconds.
   The log (`stdout.log`) records each clean-up with its pause and every new
   peak, plus the frame rate every 15 seconds and, once, the GPU driver, the
   window size and whether LuaJIT's compiler is on.
@@ -161,8 +164,8 @@ run interpreted, several times slower; a voxel mod's 3D view shows it most.
 Webmon switches the compiler back on before the game starts. If it ever
 misbehaves, the menu's **Lua compiler** entry turns it off (remembered across
 starts) and on again. `stdout.log` shows, every 15 seconds, the frame rate,
-the slowest frame, the clean-ups' pauses and how many traces the compiler
-built or abandoned.
+the slowest frame, the clean-ups' pauses, how many traces the compiler
+built or abandoned, and Webmon's memory with the Lua heap's share of it.
 
 For voxel mods on the TV's GPU, PotatoVoxel's LOW or POTATO preset (lower
 render scale) and switching its shadows off help most.
