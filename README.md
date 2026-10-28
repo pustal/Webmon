@@ -18,7 +18,10 @@ your own ROM.
 
 ## Installing
 
-1. Install `dist/org.webmon.app_<version>_arm.ipk` with
+1. In the [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel),
+   add the repository `https://pustal.github.io/webos-repo/api/apps.json`
+   (Settings, Extra repositories) and install Webmon from it; or install the
+   `.ipk` from the [releases](https://github.com/pustal/Webmon/releases) with
    [webOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop) or
    `ares-install`.
 2. Start Webmon. Without the game it shows a setup screen:
@@ -93,9 +96,19 @@ The data folder is
 
 ## Memory and heavy mods
 
+> **Voxel world mods (such as PotatoVoxel) are not recommended on TVs with
+> 3 GB of RAM or less.** On such a TV webOS leaves an app well under 1 GB:
+> on a 2.6 GB webOS 6 TV (Mali-G51) about 850 MB. A voxel view of a town
+> needs more than that within minutes (Webmon passed 800 MB in Fuchsia City,
+> with the game's own data still growing), so the game keeps hitting the
+> fresh start below, and it runs at about 25 fps at best even indoors. The
+> game itself, and the mod with its voxel view switched off (VOXEL: OFF), run
+> fine; small indoor maps are usually manageable. The upload page's **TV**
+> section shows how much memory your TV has and leaves free.
+
 webOS restarts the app when the TV runs short of free memory. Big mods can get
 there: a voxel world mod (such as PotatoVoxel) building its map cache creates a
-lot of 3D data at once. Webmon helps in two ways:
+lot of 3D data at once. Webmon helps in three ways:
 
 - **Prompt clean-up.** LÖVE objects (meshes, image data) hold memory that Lua's
   garbage collector does not see, so it would wait too long to free them.
