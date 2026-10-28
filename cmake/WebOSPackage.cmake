@@ -9,7 +9,7 @@
 #   lib/libSDL2-2.0.so.0            SDL-webOS
 #   lib/libstdc++.so.6, libgcc_s.so.1   the toolchain's C++ runtime (the TV's is older)
 #   share/setup/                    the setup screen (Lua)
-#   LICENSE, THIRD_PARTY_NOTICES.md, LICENSE-cpp-httplib.txt
+#   LICENSE, THIRD_PARTY_NOTICES.md, LICENSE-cpp-httplib.txt, LICENSE-miniz.txt
 # then builds dist/<id>_<version>_arm.ipk with ares-package (@webos-tools/cli)
 # and the Homebrew Channel manifest next to it.
 #
@@ -52,6 +52,7 @@ add_custom_target(webos-stage
     COMMAND "${CMAKE_COMMAND}" -E copy_directory "${WEBMON_ROOT}/setup" "${WEBMON_IPK_STAGE}/share/setup"
     COMMAND "${CMAKE_COMMAND}" -E copy "${WEBMON_ROOT}/LICENSE" "${WEBMON_ROOT}/THIRD_PARTY_NOTICES.md" "${WEBMON_IPK_STAGE}/"
     COMMAND "${CMAKE_COMMAND}" -E copy "${WEBMON_ROOT}/third_party/cpp-httplib/LICENSE" "${WEBMON_IPK_STAGE}/LICENSE-cpp-httplib.txt"
+    COMMAND "${CMAKE_COMMAND}" -E copy "${WEBMON_ROOT}/third_party/miniz/LICENSE" "${WEBMON_IPK_STAGE}/LICENSE-miniz.txt"
     DEPENDS webmon
     COMMENT "Staging the IPK contents in ${WEBMON_IPK_STAGE}"
     VERBATIM)

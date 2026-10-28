@@ -4,7 +4,10 @@
  */
 #include "Library.h"
 
+#include "ZipReader.h"
+
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -32,16 +35,19 @@ struct KindInfo {
     std::array<const char *, 3> extensions; ///< lower case, without the dot; nullptr-terminated
 };
 
-constexpr std::array<KindInfo, 5> kKinds = { {
+constexpr std::array<KindInfo, 6> kKinds = { {
     { FileKind::Love, "love", "game", "", { "love", nullptr, nullptr } },
     { FileKind::Rom, "rom", "inbox/roms", "roms", { "gb", "gbc", "gba" } },
     { FileKind::Save, "sav", "inbox/saves", "saves", { "sav", "srm", nullptr } },
     { FileKind::ModZip, "mod", "inbox/mod-zips", "mod-zips", { "zip", nullptr, nullptr } },
     { FileKind::Cart, "cart", "inbox/carts", "carts", { "g1rcart", nullptr, nullptr } },
+    // N64 ROMs for mods that import from one (the Stadium 2 importer); the game
+    // accepts all three byte orders.
+    { FileKind::N64Rom, "n64", "inbox/n64", "n64", { "z64", "n64", "v64" } },
 } };
 
 /** USB Webmon sub-folders created with the folder itself. */
-const std::vector<std::string> kUsbSubFolders = { "roms", "saves", "mod-zips", "carts", "game-data" };
+const std::vector<std::string> kUsbSubFolders = { "roms", "saves", "mod-zips", "carts", "n64", "game-data" };
 
 /** Deepest folder level searched below a RetroArch "roms"/"saves" folder. */
 constexpr int kRetroArchDepth = 3;
@@ -108,6 +114,11 @@ bool Library::AcceptsName(FileKind kind, const std::string &name)
 }
 
 Library::Library(std::string dataFolder, Usb &usb) : dataFolder_(std::move(dataFolder)), usb_(usb) {}
+
+const std::vector<std::string> &Library::UsbSubFolders()
+{
+    return kUsbSubFolders;
+}
 
 bool Library::LooksLikePokemon(const std::string &name)
 {
@@ -296,7 +307,8 @@ void Library::AddFolder(std::vector<LibraryFile> &out, FileKind kind, const std:
 
 void Library::AddRetroArch(std::vector<LibraryFile> &out, FileKind kind)
 {
-    const char *folderName = kind == FileKind::Rom ? "roms" : "saves";
+    // ROMs of every system (GB, GBA, N64) share RetroArch's roms/ folder.
+    const char *folderName = kind == FileKind::Save ? "saves" : "roms";
     for (const UsbDrive &drive : usb_.ListDrives()) {
         if (drive.readable) {
             // Case-insensitive "roms"/"saves" at the root of the drive.
@@ -354,7 +366,7 @@ std::vector<LibraryFile> Library::List(FileKind kind)
         const std::string usbFolder = dataFolder_ + "/usb" + (*info.usbFolder ? std::string("/") + info.usbFolder : "");
         AddFolder(files, kind, usbFolder, "USB Webmon", true);
     }
-    if (kind == FileKind::Rom || kind == FileKind::Save)
+    if (kind == FileKind::Rom || kind == FileKind::Save || kind == FileKind::N64Rom)
         AddRetroArch(files, kind);
     return files;
 }
@@ -484,6 +496,175 @@ std::string Library::RemoveModStorage(const std::string &game, const std::string
         return "Could not delete it: " + ec.message();
     }
     std::printf("[Webmon] deleted mod data %s/%s\n", game.c_str(), playthrough.c_str());
+    return std::string();
+}
+
+std::string Library::ModStorageRoot() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return gameFolder_ + "/mod_storage";
+}
+
+namespace
+{
+
+/** Room left free beside an unpacked archive, for the game's own writes. */
+constexpr std::uint64_t kSpareBytes = 32ull * 1024ull * 1024ull;
+
+/** Free bytes on the file system holding @p path (0 if unknown). */
+std::uint64_t FreeBytesAt(const std::string &path)
+{
+    struct statvfs info {};
+    if (statvfs(path.c_str(), &info) != 0)
+        return 0;
+    return static_cast<std::uint64_t>(info.f_bavail) * info.f_frsize;
+}
+
+/** @p bytes in MB with one decimal, for messages. */
+std::string Megabytes(std::uint64_t bytes)
+{
+    char text[32];
+    std::snprintf(text, sizeof(text), "%.1f MB", static_cast<double>(bytes) / (1024.0 * 1024.0));
+    return text;
+}
+
+} // namespace
+
+std::string Library::InstallModStorage(const std::string &zipPath, const std::string &game,
+                                       const std::string &playthrough, std::string *summary)
+{
+    if (!IsPlainSegment(game) || !IsPlainSegment(playthrough))
+        return "Unknown game or playthrough.";
+    const std::string target = ModStorageRoot() + "/" + game + "/" + playthrough;
+
+    ZipReader zip;
+    std::string error = zip.Open(zipPath);
+    if (!error.empty())
+        return "The upload is " + error + ".";
+    std::vector<std::string> names;
+    names.reserve(zip.Entries().size());
+    for (const ZipEntry &entry : zip.Entries())
+        names.push_back(entry.directory ? entry.name + (entry.name.empty() || entry.name.back() != '/' ? "/" : "")
+                                        : entry.name);
+    std::vector<std::string> relative;
+    error = PlanModStorageArchive(names, &relative);
+    if (!error.empty())
+        return error;
+
+    // What will be unpacked: total size, file count and the mod folders it replaces.
+    std::uint64_t total = 0;
+    std::size_t files   = 0;
+    std::vector<std::string> mods;
+    for (std::size_t i = 0; i < relative.size(); ++i) {
+        if (relative[i].empty())
+            continue;
+        total += zip.Entries()[i].size;
+        ++files;
+        const std::string mod = relative[i].substr(0, relative[i].find('/'));
+        if (std::find(mods.begin(), mods.end(), mod) == mods.end())
+            mods.push_back(mod);
+    }
+
+    std::error_code ec;
+    fs::create_directories(target, ec);
+    if (ec)
+        return "Could not create the playthrough folder: " + ec.message();
+    const std::uint64_t free = FreeBytesAt(target);
+    if (free < total + kSpareBytes)
+        return "Not enough free space: the files need " + Megabytes(total) + ", " + Megabytes(free) + " are free.";
+
+    // Unpack beside the target first, so a failure leaves the current data as it was.
+    const std::string staging = target + "/.webmon-incoming";
+    fs::remove_all(staging, ec);
+    ec.clear();
+    for (std::size_t i = 0; i < relative.size(); ++i) {
+        if (relative[i].empty())
+            continue;
+        const fs::path destination = staging + "/" + relative[i];
+        fs::create_directories(destination.parent_path(), ec);
+        const std::string extractError = ec ? ec.message() : zip.Extract(zip.Entries()[i].index, destination.string());
+        if (!extractError.empty()) {
+            fs::remove_all(staging, ec);
+            return "Could not unpack " + relative[i] + ": " + extractError + ".";
+        }
+    }
+
+    // Swap each mod folder in.
+    for (const std::string &mod : mods) {
+        const std::string current = target + "/" + mod;
+        fs::remove_all(current, ec);
+        if (!ec)
+            fs::rename(staging + "/" + mod, current, ec);
+        if (ec) {
+            const std::string message = ec.message();
+            fs::remove_all(staging, ec);
+            return "Could not put " + mod + " in place: " + message + ".";
+        }
+    }
+    fs::remove_all(staging, ec);
+
+    std::string modList;
+    for (const std::string &mod : mods)
+        modList += (modList.empty() ? "" : ", ") + mod;
+    *summary = "Unpacked " + std::to_string(files) + (files == 1 ? " file (" : " files (") + Megabytes(total) + ") into " + modList + " of " +
+               game + " playthrough " + playthrough + ".";
+    std::printf("[Webmon] %s\n", summary->c_str());
+    return std::string();
+}
+
+std::vector<GameSaveFile> Library::GameSaves()
+{
+    std::string root;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        root = gameFolder_;
+    }
+    std::vector<GameSaveFile> saves;
+    const auto add = [&](const fs::path &path) {
+        const std::string name = path.filename().string();
+        // Hidden files and the game's own temporary and backup copies are left out.
+        if (name.empty() || name[0] == '.' || Lower(name).find(".tmp") != std::string::npos ||
+            Lower(name).find(".bak") != std::string::npos)
+            return;
+        struct stat info {};
+        if (stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode))
+            return;
+        GameSaveFile save;
+        save.relative = path.string().substr(root.size() + 1);
+        save.size     = static_cast<std::uint64_t>(info.st_size);
+        save.modified = static_cast<std::int64_t>(info.st_mtime);
+        saves.push_back(std::move(save));
+    };
+
+    std::error_code ec;
+    for (const char *folder : { "saves", "exports" }) {
+        for (fs::recursive_directory_iterator it(root + "/" + folder, fs::directory_options::skip_permission_denied, ec),
+             end;
+             !ec && it != end; it.increment(ec))
+            add(it->path());
+        ec.clear();
+    }
+    // Saves from before the game had slots: save.lua, save_yellow.lua, save_cart_<id>.lua.
+    for (fs::directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end;
+         it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        if (name.rfind("save", 0) == 0 && name.size() > 4 && name.compare(name.size() - 4, 4, ".lua") == 0)
+            add(it->path());
+    }
+
+    std::sort(saves.begin(), saves.end(),
+              [](const GameSaveFile &a, const GameSaveFile &b) { return a.modified > b.modified; });
+    return saves;
+}
+
+std::string Library::GameSavePath(const std::string &relative)
+{
+    for (const GameSaveFile &save : GameSaves()) {
+        if (save.relative == relative) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            return gameFolder_ + "/" + relative;
+        }
+    }
     return std::string();
 }
 

@@ -17,6 +17,7 @@
 #define CPPHTTPLIB_THREAD_POOL_COUNT 4
 #include <httplib.h>
 
+#include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
 
@@ -25,8 +26,10 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <random>
 #include <sstream>
 
@@ -40,7 +43,7 @@ constexpr const char *kTextType  = "text/plain; charset=utf-8";
 constexpr const char *kPinHeader = "X-Pin";
 constexpr const char *kPinFile   = "webmon_pin.txt";
 constexpr int kPortAttempts      = 10;
-/** Largest upload accepted (a .love is ~100 MB; GBA ROMs are at most 32 MB). */
+/** Largest upload accepted (a .love is ~100 MB; N64 ROMs are at most 64 MB). */
 constexpr std::uint64_t kMaxUploadBytes = 512ull * 1024ull * 1024ull;
 
 void Fail(httplib::Response &res, int status, const std::string &message)
@@ -111,6 +114,60 @@ std::string StreamBodyToFile(const httplib::ContentReader &reader, const std::st
         return std::string("saving failed (") + std::strerror(flushError) + ")";
     return std::string();
 }
+
+/** Percent-encodes @p text for a URL or an RFC 5987 header value. */
+std::string PercentEncode(const std::string &text)
+{
+    static const char kHex[] = "0123456789ABCDEF";
+    std::string out;
+    for (const char c : text) {
+        const unsigned char byte = static_cast<unsigned char>(c);
+        if (std::isalnum(byte) != 0 || c == '-' || c == '_' || c == '.' || c == '~') {
+            out += c;
+        } else {
+            out += '%';
+            out += kHex[byte >> 4];
+            out += kHex[byte & 0x0F];
+        }
+    }
+    return out;
+}
+
+/**
+ * Answers with the file @p path as a download named @p name, read in chunks
+ * as the browser takes it. @return False if it is not a readable regular file.
+ */
+bool SendFile(httplib::Response &res, const std::string &path, const std::string &name)
+{
+    struct stat info {};
+    if (stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode))
+        return false;
+    std::FILE *raw = std::fopen(path.c_str(), "rb");
+    if (!raw)
+        return false;
+    // Shared so the provider (copied by cpp-httplib) closes it once, when the response is done.
+    const std::shared_ptr<std::FILE> file(raw, [](std::FILE *f) { std::fclose(f); });
+
+    // A plain ASCII name for old browsers, and the exact (UTF-8) one for the rest.
+    std::string plain;
+    for (const char c : name)
+        plain += (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7E || c == '"' || c == '\\') ? '_' : c;
+    res.set_header("Content-Disposition", "attachment; filename=\"" + plain + "\"; filename*=UTF-8''" + PercentEncode(name));
+    res.set_header("Cache-Control", "no-store");
+    res.set_content_provider(
+        static_cast<std::size_t>(info.st_size), "application/octet-stream",
+        [file](std::size_t offset, std::size_t length, httplib::DataSink &sink) {
+            char buffer[64 * 1024];
+            if (fseeko(file.get(), static_cast<off_t>(offset), SEEK_SET) != 0)
+                return false;
+            const std::size_t read = std::fread(buffer, 1, std::min(length, sizeof(buffer)), file.get());
+            return read > 0 && sink.write(buffer, read);
+        });
+    return true;
+}
+
+/** Largest mod data archive accepted (2 GB: files past that need large-file support on the TV). */
+constexpr std::uint64_t kMaxModArchiveBytes = 2000ull * 1024ull * 1024ull;
 
 const char *UsbLinkName(UsbLink link)
 {
@@ -340,6 +397,26 @@ void WebServer::RegisterRoutes()
         Ok(res, "Stored " + name + ".");
     });
 
+    // A listed file, as a download. Only paths the list for that kind gives are served.
+    server.Get("/api/files/content", [this](const httplib::Request &req, httplib::Response &res) {
+        FileKind kind;
+        if (!Library::ParseKind(req.get_param_value("kind"), &kind)) {
+            Fail(res, 400, "Unknown kind.");
+            return;
+        }
+        const std::string path = req.get_param_value("path");
+        const std::vector<LibraryFile> files = library_.List(kind);
+        const auto file = std::find_if(files.begin(), files.end(), [&](const LibraryFile &f) { return f.path == path; });
+        if (file == files.end()) {
+            Fail(res, 404, "That file is not in the list.");
+            return;
+        }
+        // On a drive only root can read, MakeReadable() copies it into TV storage first.
+        const std::string readable = library_.MakeReadable(file->path);
+        if (readable.empty() || !SendFile(res, readable, file->name))
+            Fail(res, 500, "Could not read " + file->name + ".");
+    });
+
     server.Delete("/api/files", [this](const httplib::Request &req, httplib::Response &res) {
         const std::string error = library_.Remove(req.get_param_value("path"));
         if (!error.empty()) {
@@ -370,7 +447,7 @@ void WebServer::RegisterRoutes()
             Fail(res, 400, "That is not a mounted USB drive.");
             return;
         }
-        std::string error = usb_.CreateWebmonFolder(mount, { "roms", "saves", "mod-zips", "carts", "game-data" });
+        std::string error = usb_.CreateWebmonFolder(mount, Library::UsbSubFolders());
         if (error.empty())
             error = library_.LinkUsb();
         if (error.empty())
@@ -405,6 +482,81 @@ void WebServer::RegisterRoutes()
             return;
         }
         Ok(res, "Deleted.");
+    });
+
+    // A .zip of mod data (such as a voxel map cache built on a computer) for one playthrough.
+    server.Put("/api/mod-storage", [this](const httplib::Request &req, httplib::Response &res,
+                                          const httplib::ContentReader &reader) {
+        const std::string game        = req.get_param_value("game");
+        const std::string playthrough = req.get_param_value("playthrough");
+        std::uint64_t size            = 0;
+        if (!ContentLength(req, &size) || size == 0 || size > kMaxModArchiveBytes) {
+            Fail(res, 411, "The upload needs a size between 1 byte and 2000 MB.");
+            return;
+        }
+        std::unique_lock<std::mutex> busy(modUploadMutex_, std::try_to_lock);
+        if (!busy.owns_lock()) {
+            Fail(res, 409, "Another mod data upload is being unpacked. Try again when it is done.");
+            return;
+        }
+        // The archive goes beside the mod data, on the same drive, and is deleted once unpacked.
+        const std::string root = library_.ModStorageRoot();
+        std::error_code ec;
+        std::filesystem::create_directories(root, ec);
+        if (FreeBytes(root) < size * 2) {
+            Fail(res, 507, "Not enough free space for the archive and its unpacked files.");
+            return;
+        }
+        const std::string archive = root + "/.webmon-upload.zip";
+        std::string error = StreamBodyToFile(reader, archive, size);
+        std::string summary;
+        if (error.empty())
+            error = library_.InstallModStorage(archive, game, playthrough, &summary);
+        else
+            error = "Could not store the upload: " + error + ".";
+        unlink(archive.c_str());
+        if (!error.empty()) {
+            std::fprintf(stderr, "[Webmon] mod data upload for %s/%s: %s\n", game.c_str(), playthrough.c_str(),
+                         error.c_str());
+            Fail(res, 400, error);
+            return;
+        }
+        // A running mod may still hold the old data in memory and write it back.
+        restartSuggested_.store(true);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            lastEvent_ = summary;
+        }
+        Ok(res, summary);
+    });
+
+    server.Get("/api/game-saves", [this](const httplib::Request &, httplib::Response &res) {
+        std::ostringstream out;
+        out << "[";
+        bool first = true;
+        for (const GameSaveFile &save : library_.GameSaves()) {
+            out << (first ? "" : ",") << "{\"path\":" << json::Quote(save.relative) << ",\"size\":" << save.size
+                << ",\"modified\":" << save.modified << "}";
+            first = false;
+        }
+        out << "]";
+        res.set_content(out.str(), kJsonType);
+    });
+
+    server.Get("/api/game-saves/content", [this](const httplib::Request &req, httplib::Response &res) {
+        const std::string relative = req.get_param_value("path");
+        const std::string path     = library_.GameSavePath(relative);
+        // saves/yellow/slot1.lua downloads as yellow-slot1.lua; exports keep their own names.
+        std::string name = relative;
+        if (name.rfind("exports/", 0) == 0) {
+            name.erase(0, name.rfind('/') + 1);
+        } else {
+            if (name.rfind("saves/", 0) == 0)
+                name.erase(0, std::strlen("saves/"));
+            std::replace(name.begin(), name.end(), '/', '-');
+        }
+        if (path.empty() || !SendFile(res, path, name))
+            Fail(res, 404, "That save is not in the list.");
     });
 
     server.Post("/api/swap", [this](const httplib::Request &req, httplib::Response &res) {

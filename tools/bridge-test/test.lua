@@ -2,12 +2,13 @@
 -- Run: lua5.1 tools/bridge-test/test.lua src/lua/bridge.lua
 -- Stand-ins for LÖVE and the launcher's webmon table.
 memoryNow = { 100, 900 }
+listed = nil
 freshRequested = false
 local quitWith = nil
 local clock = 0
 local pending = "unset"
 webmon = {
-  files = function(kind) return { { name = "A.gb", path = "/usb/A.gb", source = "USB", size = 1 },
+  files = function(kind) listed = kind; return { { name = "A.gb", path = "/usb/A.gb", source = "USB", size = 1 },
                                   { name = "B.gb", path = "/usb/B.gb", source = "TV", size = 2 } } end,
   readable = function(p) return p == "/usb/B.gb" and "/copy/B.gb" or nil end,
   server = function() return "http://1.2.3.4:47811", "1234" end,
@@ -25,7 +26,7 @@ local graphics = setmetatable({
 }, { __index = function() return function() end end })
 love = { system = {}, keyboard = { hasTextInput = function() return false end },
          graphics = graphics, timer = { getTime = function() return clock end },
-         event = { quit = function(how) quitWith = how end } }
+         event = { quit = function(how) quitWith = how; quitCalled = true end } }
 local gameKeys = {}
 package.preload.main = function()
   function love.keypressed(k) gameKeys[#gameKeys + 1] = k end
@@ -34,7 +35,7 @@ package.preload.main = function()
 end
 dofile(arg[1])
 require("main")
-assert(love.system.pickFileKinds() == "rom,sav,mod,cart")
+assert(love.system.pickFileKinds() == "rom,sav,mod,cart,required_import")
 assert(love.system.pickFile("rom") == true and pending == "rom")
 love.keypressed("down")          -- to B.gb
 love.keypressed("return")        -- choose
@@ -54,6 +55,35 @@ assert(gameKeys[2] == "new:up", "the game's new callback runs")
 assert(love.system.pickFile("rom")); love.keypressed("return")   -- A.gb is unreadable
 assert(love.system.getPickedFile() == nil and love.system.getPickError():find("A.gb"))
 assert(love.system.pickFile("bogus") == false)
+-- A mod's required import (Stadium 2 importer) is picked from the N64 ROMs.
+assert(love.system.pickFile("required_import") and listed == "n64"); love.keypressed("x")
+-- Menu: the controller's Home button opens it; the game sees no menu input,
+-- only the shortcut keys the menu sends.
+local before = #gameKeys
+love.gamepadpressed(nil, "guide")
+love.keypressed("down"); love.keypressed("down"); love.keypressed("down")   -- Tilt
+love.keypressed("return")
+assert(gameKeys[before + 1] == "new:3" and #gameKeys == before + 1, "tilt sent as key 3")
+love.keypressed("down"); love.keypressed("down"); love.keypressed("down")   -- Zoom out / in
+love.keypressed("left"); love.keypressed("right")
+assert(gameKeys[before + 2] == "new:-" and gameKeys[before + 3] == "new:=", "zoom keys")
+love.keypressed("x")                                  -- Back closes
+love.keypressed("up")
+assert(gameKeys[#gameKeys] == "new:up", "menu closed, game has the input again")
+love.gamepadpressed(nil, "guide"); love.keypressed("up")   -- opens at the top; up wraps to Quit
+love.keypressed("return")
+assert(quitWith == nil, "first OK only asks")
+love.keypressed("return")
+assert(quitWith == nil and quitCalled, "second OK quits")
+quitCalled = false
+-- Remote 1 (through the launcher) toggles the menu too.
+local toggles = 1
+webmon.takePanelToggles = function() local n = toggles; toggles = 0; return n end
+love.graphics.present()
+love.keypressed("down"); love.keypressed("return")   -- Quick save, closes the menu
+assert(gameKeys[#gameKeys] == "new:f1", "quick save sent as F1")
+love.keypressed("down")
+assert(gameKeys[#gameKeys] == "new:down", "menu closed after quick save")
 -- Memory: critically low after collecting, three times in a row, starts a countdown;
 -- Back cancels it, and once it runs out the game quits for a fresh start.
 local function frame(seconds) clock = clock + seconds; love.graphics.present() end

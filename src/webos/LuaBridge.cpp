@@ -3,7 +3,7 @@
  * @brief Implementation of LuaBridge.h.
  *
  * Lua API (global "webmon"):
- *   webmon.files(kind)         -> { {name=, path=, source=, size=}, ... }  kind: "love","rom","sav","mod","cart"
+ *   webmon.files(kind)         -> { {name=, path=, source=, size=}, ... }  kind: "love","rom","sav","mod","cart","n64"
  *   webmon.readable(path)      -> a path the game can open (a root copy if needed), or nil
  *   webmon.server()            -> address ("http://..." or ""), pin
  *   webmon.setPendingPick(k)   -> tells the upload page which file the game waits for (nil: none)

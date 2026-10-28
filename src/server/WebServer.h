@@ -13,7 +13,7 @@
  *
  * API:
  *   GET    /api/status
- *   GET    /api/files?kind=love|rom|sav|mod|cart
+ *   GET    /api/files?kind=love|rom|sav|mod|cart|n64
  *   PUT    /api/files/<kind>/<name>[?dest=tv|usb]   body: the file
  *   DELETE /api/files?path=<path from /api/files>
  *   POST   /api/download[?url=<release asset>]      no url: the latest release
@@ -22,6 +22,10 @@
  *   DELETE /api/swap                                remove it
  *   GET    /api/mod-storage                         the game's mod data per playthrough
  *   DELETE /api/mod-storage?game=<g>&playthrough=<id>   delete one
+ *   PUT    /api/mod-storage?game=<g>&playthrough=<id>   body: a .zip unpacked into it
+ *   GET    /api/files/content?kind=<k>&path=<path>      a listed file, as a download
+ *   GET    /api/game-saves                              the game's own saves and exports
+ *   GET    /api/game-saves/content?path=<relative>      one of them, as a download
  */
 #ifndef WEBMON_WEB_SERVER_H
 #define WEBMON_WEB_SERVER_H
@@ -103,6 +107,7 @@ private:
     mutable std::mutex mutex_;
     std::string pendingPick_;
     std::string lastEvent_;
+    std::mutex modUploadMutex_; ///< One mod data archive is unpacked at a time
 };
 
 } // namespace webmon

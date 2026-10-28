@@ -7,7 +7,7 @@
 # or scripts/build-webos.sh for both.
 
 cmake_minimum_required(VERSION 3.21)
-project(Webmon VERSION 0.3.2 LANGUAGES C CXX)
+project(Webmon VERSION 0.3.3 LANGUAGES C CXX)
 
 set(WEBMON_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${WEBMON_ROOT}/cmake")
@@ -70,6 +70,8 @@ add_executable(webmon
     src/webos/Process.cpp
     src/webos/Swap.cpp
     src/webos/Usb.cpp
+    src/webos/ZipReader.cpp
+    third_party/miniz/miniz.c
     "${WEBMON_GENERATED_DIR}/WebPage.generated.h"
     "${WEBMON_GENERATED_DIR}/BridgeScript.generated.h"
 )
@@ -77,10 +79,13 @@ target_compile_features(webmon PRIVATE cxx_std_17)
 set_target_properties(webmon PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(webmon PRIVATE "${WEBMON_ROOT}/src" "${WEBMON_GENERATED_DIR}")
 # cpp-httplib (MIT) is header-only; treat it as a system header so its warnings stay out of ours.
-target_include_directories(webmon SYSTEM PRIVATE "${WEBMON_ROOT}/third_party/cpp-httplib")
+target_include_directories(webmon SYSTEM PRIVATE "${WEBMON_ROOT}/third_party/cpp-httplib"
+                                                  "${WEBMON_ROOT}/third_party/miniz")
 target_compile_definitions(webmon PRIVATE WEBMON_VERSION="${PROJECT_VERSION}")
 # -Wno-psabi: GCC notes an ARM ABI change from GCC 7 for std::vector arguments; it does not affect us.
-target_compile_options(webmon PRIVATE -Wall -Wextra -Wshadow -Wconversion -Wno-sign-conversion -Wno-psabi)
+target_compile_options(webmon PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wshadow -Wconversion -Wno-sign-conversion -Wno-psabi>)
+# miniz (MIT, zip reading for mod data uploads) is third-party C: built as it comes, without our warnings.
+set_source_files_properties(third_party/miniz/miniz.c PROPERTIES COMPILE_OPTIONS "-w")
 target_link_libraries(webmon PRIVATE Webmon::love Webmon::luajit Webmon::SDL2 Threads::Threads)
 set_target_properties(webmon PROPERTIES
     BUILD_WITH_INSTALL_RPATH ON

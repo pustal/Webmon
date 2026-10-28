@@ -41,6 +41,7 @@
   .banner.restart { background: #e3f2ea; color: #1e5236; }
   progress { width: 100%; height: 10px; }
   .hidden { display: none; }
+  code { font-size: .88em; }
   .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
   .tabs button { background: transparent; color: var(--text); border: 1px solid var(--line); }
   .tabs button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
@@ -76,8 +77,8 @@
     <section>
       <h2>USB drives</h2>
       <p class="muted">Webmon keeps heavier files (the game, ROMs, saves, mods) in a <b>Webmon</b> folder on a USB drive
-        when there is one. ROMs and saves in RetroArch-style <b>roms</b> and <b>saves</b> folders at the root of a drive
-        also show up in the game's file picker.</p>
+        when there is one. Pokemon ROMs (Game Boy and N64) and saves in RetroArch-style <b>roms</b> and <b>saves</b>
+        folders at the root of a drive also show up in the game's file picker.</p>
       <table><thead><tr><th>Drive</th><th>Free</th><th>Access</th><th>Webmon folder</th></tr></thead>
         <tbody id="drives-table"></tbody></table>
     </section>
@@ -107,10 +108,29 @@
         and when the game gives a playthrough a new id (for example after the app was closed during a cache build)
         the mod starts a new cache and the old one stays behind. Delete the ones you no longer need; the newest is
         usually the one in use. A deleted cache is rebuilt when needed.</p>
+      <p class="muted">A cache can also be built on a computer (LÖVE 11.5 with the same game release, mod version and
+        ROM) and uploaded here: zip the playthrough folder from the computer's
+        <code>mod_storage/&lt;game&gt;/</code> (or the mod folders inside it) and use <b>Upload .zip</b> on the playthrough
+        you play on the TV. Each mod folder in the zip replaces the one there. Restart Webmon afterwards.</p>
       <div class="row"><button id="mod-storage-refresh" class="secondary">Refresh</button>
         <span id="mod-storage-note" class="muted"></span></div>
+      <div id="mod-upload-box" class="hidden">
+        <p id="mod-upload-text" class="muted"></p>
+        <progress id="mod-upload-progress" max="1" value="0"></progress>
+      </div>
+      <input id="mod-upload-input" type="file" accept=".zip" class="hidden">
       <table><thead><tr><th>Game</th><th>Playthrough</th><th>Size</th><th>Last changed</th><th></th></tr></thead>
         <tbody id="mod-storage-table"></tbody></table>
+    </section>
+
+    <section>
+      <h2>Game saves</h2>
+      <p class="muted">The game's own saves: its slots (<code>.lua</code>, the game's format, for backups or another
+        gen1recomp) and the battery saves it exported (<code>.sav</code>, for emulators; use the game's save export to
+        make one).</p>
+      <div class="row"><button id="game-saves-refresh" class="secondary">Refresh</button></div>
+      <table><thead><tr><th>File</th><th>Size</th><th>Last changed</th><th></th></tr></thead>
+        <tbody id="game-saves-table"></tbody></table>
     </section>
 
     <section>
@@ -167,8 +187,11 @@ const KINDS = [
   { id: "sav", label: "Saves", accept: ".sav,.srm", help: "Battery saves (.sav, or RetroArch .srm), offered by the game's save import." },
   { id: "mod", label: "Mod zips", accept: ".zip", help: "Mod archives, offered by the game's Install mod." },
   { id: "cart", label: "Carts", accept: ".g1rcart", help: "Custom carts, offered by the game's cart install." },
+  { id: "n64", label: "N64 ROMs", accept: ".z64,.n64,.v64",
+    help: "Nintendo 64 ROMs a mod imports from, such as Pokemon Stadium 2 for the Stadium 2 importer (any byte order)." },
 ];
-const PICK_NAMES = { rom: "a ROM", sav: "a save file", mod: "a mod", cart: "a cart" };
+const PICK_NAMES = { rom: "a ROM", sav: "a save file", mod: "a mod", cart: "a cart",
+                     required_import: "the N64 ROM a mod needs (upload it under N64 ROMs)" };
 const RELEASES_API = "https://api.github.com/repos/bryanthaboi/gen1recomp/releases?per_page=8";
 
 /** @type {string} */
@@ -210,6 +233,41 @@ async function api(method, path, body) {
   return text ? JSON.parse(text) : null;
 }
 
+/**
+ * Downloads a file from the TV's API (which needs the PIN header, so a plain link cannot do it).
+ * @param {string} path API path @param {string} name file name to save as @param {HTMLButtonElement} button
+ */
+async function downloadFromTv(path, name, button) {
+  button.disabled = true;
+  const label = button.textContent;
+  button.textContent = "Downloading...";
+  try {
+    const response = await fetch(path, { headers: { "X-Pin": pin } });
+    if (!response.ok) throw new Error((await response.text()) || response.statusText);
+    const url = URL.createObjectURL(await response.blob());
+    const link = el("a");
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (error) {
+    alert(String(error.message || error));
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
+/** A secondary button. @param {string} label @param {() => void} onClick */
+function actionButton(label, onClick) {
+  const button = el("button", label, "secondary");
+  button.style.margin = "0 6px 4px 0";
+  button.addEventListener("click", onClick);
+  return button;
+}
+
 // ---- PIN --------------------------------------------------------------------------
 
 async function connect() {
@@ -222,6 +280,7 @@ async function connect() {
     selectKind(currentKind);
     loadReleases();
     refreshModStorage();
+    refreshGameSaves();
     setInterval(refreshStatus, 2000);
   } catch (error) {
     $("pin-error").textContent = String(error.message || error);
@@ -394,13 +453,93 @@ async function refreshModStorage() {
     row.appendChild(el("td", formatBytes(folder.bytes) || "0 B"));
     row.appendChild(el("td", folder.modified ? new Date(folder.modified * 1000).toLocaleString() : ""));
     const cell = el("td");
-    const button = el("button", "Delete", "secondary");
-    button.addEventListener("click", async () => {
+    cell.appendChild(actionButton("Upload .zip", () => chooseModArchive(folder.game, folder.playthrough)));
+    cell.appendChild(actionButton("Delete", async () => {
       const warning = folder.newest ? " This is the newest one, probably the playthrough you are using." : "";
       if (!confirm("Delete the mod data of " + folder.game + " playthrough " + folder.playthrough + "?" + warning)) return;
       try { await deleteModStorage(folder.game, folder.playthrough); } catch (error) { alert(String(error.message || error)); }
       refreshModStorage();
-    });
+    }));
+    row.appendChild(cell);
+    table.appendChild(row);
+  }
+}
+
+/** The playthrough the next chosen .zip goes to. @type {{game: string, playthrough: string}|null} */
+let modArchiveTarget = null;
+
+/** Asks for a .zip for one playthrough. @param {string} game @param {string} playthrough */
+function chooseModArchive(game, playthrough) {
+  modArchiveTarget = { game, playthrough };
+  $("mod-upload-input").value = "";
+  $("mod-upload-input").click();
+}
+
+/** Uploads the chosen .zip; the TV unpacks it into the playthrough chosen with chooseModArchive(). */
+function uploadModArchive() {
+  const file = ($("mod-upload-input").files || [])[0];
+  const target = modArchiveTarget;
+  if (!file || !target) return;
+  if (!confirm("Unpack " + file.name + " into " + target.game + " playthrough " + target.playthrough
+               + "? Each mod folder in it replaces the one there.")) return;
+  const text = $("mod-upload-text");
+  const progress = $("mod-upload-progress");
+  $("mod-upload-box").classList.remove("hidden");
+  text.textContent = "Uploading " + file.name + "...";
+  progress.value = 0;
+  const request = new XMLHttpRequest();
+  request.open("PUT", "/api/mod-storage?game=" + encodeURIComponent(target.game)
+               + "&playthrough=" + encodeURIComponent(target.playthrough));
+  request.setRequestHeader("X-Pin", pin);
+  request.upload.onprogress = (event) => {
+    progress.value = event.total ? event.loaded / event.total : 0;
+    if (event.loaded === event.total) text.textContent = "Unpacking on the TV...";
+  };
+  request.onload = () => {
+    let message = request.responseText;
+    try { message = JSON.parse(request.responseText).message; } catch (e) { /* plain text error */ }
+    text.textContent = request.status >= 200 && request.status < 300
+      ? message + " Restart Webmon on the TV to use it."
+      : "Failed: " + (message || "HTTP " + request.status);
+    progress.value = 1;
+    refreshModStorage();
+    refreshStatus();
+  };
+  request.onerror = () => { text.textContent = "The connection to the TV failed."; };
+  request.send(file);
+}
+
+// ---- Game saves ---------------------------------------------------------------------
+
+async function refreshGameSaves() {
+  const table = $("game-saves-table");
+  /** @type {Array<{path: string, size: number, modified: number}>} */
+  let saves;
+  try {
+    saves = await api("GET", "/api/game-saves");
+  } catch (error) {
+    table.textContent = "";
+    table.appendChild(el("tr")).appendChild(el("td", String(error.message || error), "bad"));
+    return;
+  }
+  table.textContent = "";
+  if (saves.length === 0) {
+    const cell = el("td", "No saves yet.", "muted");
+    cell.colSpan = 4;
+    table.appendChild(el("tr")).appendChild(cell);
+  }
+  for (const save of saves) {
+    // saves/yellow/slot1.lua is saved as yellow-slot1.lua; exports keep their names.
+    const name = save.path.startsWith("exports/")
+      ? save.path.slice(save.path.lastIndexOf("/") + 1)
+      : save.path.replace(/^saves\//, "").replace(/\//g, "-");
+    const row = el("tr");
+    row.appendChild(el("td", save.path));
+    row.appendChild(el("td", formatBytes(save.size) || "0 B"));
+    row.appendChild(el("td", save.modified ? new Date(save.modified * 1000).toLocaleString() : ""));
+    const cell = el("td");
+    const button = actionButton("Download", () =>
+      downloadFromTv("/api/game-saves/content?path=" + encodeURIComponent(save.path), name, button));
     cell.appendChild(button);
     row.appendChild(cell);
     table.appendChild(row);
@@ -491,9 +630,12 @@ async function refreshFiles() {
     row.appendChild(el("td", file.source, "muted"));
     row.appendChild(el("td", formatBytes(file.size)));
     const cell = el("td");
+    const kind = currentKind;
+    const download = actionButton("Download", () => downloadFromTv(
+      "/api/files/content?kind=" + kind + "&path=" + encodeURIComponent(file.path), file.name, download));
+    cell.appendChild(download);
     if (file.removable) {
-      const button = el("button", "Delete", "secondary");
-      button.addEventListener("click", async () => {
+      cell.appendChild(actionButton("Delete", async () => {
         if (!confirm("Delete " + file.name + "?")) return;
         try {
           await api("DELETE", "/api/files?path=" + encodeURIComponent(file.path));
@@ -501,8 +643,7 @@ async function refreshFiles() {
           alert(String(error.message || error));
         }
         refreshFiles();
-      });
-      cell.appendChild(button);
+      }));
     }
     row.appendChild(cell);
     table.appendChild(row);
@@ -564,6 +705,8 @@ $("pin").addEventListener("keydown", (event) => { if (event.key === "Enter") con
 $("download-latest").addEventListener("click", () => startDownload());
 $("upload-button").addEventListener("click", uploadSelected);
 $("mod-storage-refresh").addEventListener("click", refreshModStorage);
+$("mod-upload-input").addEventListener("change", uploadModArchive);
+$("game-saves-refresh").addEventListener("click", refreshGameSaves);
 $("swap-create").addEventListener("click", async () => {
   if (!confirm("Create a " + $("swap-size").value + " MB swap file on the USB drive? This takes a few minutes.")) return;
   try { await api("POST", "/api/swap?size=" + $("swap-size").value); } catch (error) { alert(String(error.message || error)); }

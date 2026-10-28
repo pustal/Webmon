@@ -7,9 +7,13 @@
 --    the game and lists the files Webmon knows of that kind: TV storage
 --    (uploaded through the upload page), the USB Webmon folder, and for ROMs
 --    and saves RetroArch-style roms/ and saves/ folders on USB drives.
--- 2. Info panel. Remote key 1 shows or hides the upload page address and PIN
---    (also shown for a few seconds at start). The key is caught by the
---    launcher's SDL filter (webmon.takePanelToggles), so the game never sees it.
+-- 2. Menu. Remote key 1 (caught by the launcher's SDL filter, read through
+--    webmon.takePanelToggles, so the game never sees it) or a controller's
+--    Home/guide button (unused by the game) opens Webmon's menu: the upload
+--    page address and PIN, the game's keyboard-only functions (quick save and
+--    load, tilt, zoom, colours, game speed, a voxel mod's view and camera
+--    distance, the mod manager) so a controller or remote can reach them, and
+--    quitting. A small panel with the address shows for a few seconds at start.
 --
 -- 3. Memory. LÖVE objects (meshes, image data, canvases) hold large native
 --    buffers that Lua's garbage collector does not count, so a mod building
@@ -37,13 +41,18 @@ local KINDS = {
   sav = "Choose a save file",
   mod = "Choose a mod (.zip)",
   cart = "Choose a cart (.g1rcart)",
+  required_import = "Choose the file the mod needs (N64 ROM)",
 }
 local KIND_FOLDERS = {
   rom = "Webmon/roms (or, for Pokemon titles, a RetroArch roms folder)",
   sav = "Webmon/saves (or, for Pokemon titles, a RetroArch saves folder)",
   mod = "Webmon/mod-zips",
   cart = "Webmon/carts",
+  required_import = "Webmon/n64 (or, for Pokemon titles, a RetroArch roms folder)",
 }
+-- The game's kind -> Webmon's file list. A mod's required import (such as the
+-- Stadium 2 importer's ROM) is listed from Webmon's N64 ROMs.
+local LIST_KIND = { rom = "rom", sav = "sav", mod = "mod", cart = "cart", required_import = "n64" }
 
 local PANEL_START_SECONDS = 10   -- info panel shown at start
 local MEMORY_CHECK_SECONDS = 1   -- how often the process size is checked
@@ -71,6 +80,78 @@ local panel = {
   visible = true,
   hideIn = PANEL_START_SECONDS,
 }
+
+-- ---- Menu -------------------------------------------------------------------------
+
+-- Entries: label, and what OK does (key: a key press handed to the game; run:
+-- a function), what Left/Right do (left/right: key presses), and close: shut
+-- the menu after OK. The keys are gen1recomp's own keyboard shortcuts (and
+-- PotatoVoxel's 8, Q and E); a shortcut a screen does not allow does nothing.
+local MENU = {
+  { label = "Back to the game", run = "close" },
+  { label = "Quick save", key = "f1", close = true },
+  { label = "Quick load (the last save)", key = "f2", close = true },
+  { label = "Tilt (3D view)", key = "3" },
+  { label = "Voxel view, next step (PotatoVoxel)", key = "8" },
+  { label = "Zoom level", key = "4" },
+  { label = "Zoom out / in  (Left / Right)", left = "-", right = "=" },
+  { label = "Camera farther / closer  (Left / Right, voxel mods)", left = "e", right = "q" },
+  { label = "Colours", key = "2" },
+  { label = "Game speed slower / faster  (Left / Right)", left = "0", right = "1" },
+  { label = "Mod manager", key = "f10", close = true },
+  { label = "Quit Webmon", run = "quit" },
+}
+
+local menu = {
+  open = false,
+  index = 1,
+  confirmQuit = false, -- Quit was chosen once; OK again quits
+}
+
+local game = {} -- the game's own input callbacks (filled in by wrapInput below)
+
+-- Hands a key press (and its release) to the game, as if typed.
+local function sendKey(key)
+  if game.keypressed then game.keypressed(key, key, false) end
+  if game.keyreleased then game.keyreleased(key, key) end
+end
+
+local function toggleMenu()
+  menu.open = not menu.open
+  menu.confirmQuit = false
+  if menu.open then menu.index = 1 end
+  panel.visible = false
+  panel.hideIn = nil
+end
+
+local function moveMenu(delta)
+  menu.index = (menu.index - 1 + delta) % #MENU + 1
+  menu.confirmQuit = false
+end
+
+local function activateMenu()
+  local entry = MENU[menu.index]
+  if entry.run == "close" then
+    toggleMenu()
+  elseif entry.run == "quit" then
+    if not menu.confirmQuit then
+      menu.confirmQuit = true
+      return
+    end
+    print("[Webmon] quit from the menu")
+    menu.open = false
+    love.event.quit()
+  elseif entry.key or entry.right then
+    if entry.close then toggleMenu() end
+    sendKey(entry.key or entry.right)
+  end
+end
+
+local function sideMenu(direction)
+  local entry = MENU[menu.index]
+  local key = direction < 0 and entry.left or entry.right
+  if key then sendKey(key) end
+end
 
 local memory = {
   checkIn = 0,
@@ -122,7 +203,7 @@ local function formatSize(bytes)
 end
 
 local function refreshPicker()
-  local ok, files = pcall(webmon.files, picker.kind)
+  local ok, files = pcall(webmon.files, LIST_KIND[picker.kind])
   picker.files = ok and files or {}
   if picker.index > #picker.files then picker.index = math.max(1, #picker.files) end
   picker.refreshIn = REFRESH_SECONDS
@@ -155,7 +236,7 @@ end
 
 local function installPicker()
   love.system.pickFileKinds = function()
-    return "rom,sav,mod,cart"
+    return "rom,sav,mod,cart,required_import"
   end
   love.system.pickFile = function(kind)
     if not KINDS[kind] then return false end
@@ -277,6 +358,59 @@ local function drawRestartNotice()
   end
 end
 
+local function drawMenu()
+  local s = scale()
+  local _, height = love.graphics.getDimensions()
+  local status = webmon.status()
+  local titleFont = font(math.floor(36 * s))
+  local textFont = font(math.floor(24 * s))
+  local rowFont = font(math.floor(26 * s))
+  local pad = math.floor(24 * s)
+  local rowHeight = math.floor(40 * s)
+  local lineHeight = math.floor(30 * s)
+
+  local info = { serverLine() }
+  if status.restart then info[#info + 1] = "New files received: restart Webmon to use them" end
+  info[#info + 1] = "github.com/pustal/Webmon"
+
+  local w = math.floor(900 * s)
+  local h = pad * 3 + math.floor(48 * s) + #info * lineHeight + #MENU * rowHeight + lineHeight
+  -- On the left, so the effect of tilt, zoom and the like stays visible.
+  local x, y = math.floor(40 * s), math.max(0, math.floor((height - h) / 2))
+  drawBox(x, y, w, h)
+
+  love.graphics.setFont(titleFont)
+  love.graphics.setColor(1, 0.82, 0.24)
+  love.graphics.print("Webmon", x + pad, y + pad)
+  love.graphics.setFont(textFont)
+  love.graphics.setColor(0.85, 0.86, 0.92)
+  local top = y + pad + math.floor(48 * s)
+  for i, line in ipairs(info) do love.graphics.print(line, x + pad, top + (i - 1) * lineHeight) end
+
+  top = top + #info * lineHeight + pad
+  for i, entry in ipairs(MENU) do
+    local rowY = top + (i - 1) * rowHeight
+    if i == menu.index then
+      love.graphics.setColor(0.35, 0.67, 1, 0.35)
+      love.graphics.rectangle("fill", x + pad - 10, rowY - 4, w - pad * 2 + 20, rowHeight - 4, 8, 8)
+    end
+    local label = entry.label
+    if entry.run == "quit" and menu.confirmQuit and i == menu.index then
+      label = "Press OK again to quit (unsaved progress is lost)"
+      love.graphics.setColor(1, 0.55, 0.45)
+    else
+      love.graphics.setColor(0.95, 0.95, 0.98)
+    end
+    love.graphics.setFont(rowFont)
+    love.graphics.print(label, x + pad, rowY)
+  end
+
+  love.graphics.setFont(textFont)
+  love.graphics.setColor(0.6, 0.63, 0.75)
+  love.graphics.print("OK/A: choose    Back/B, 1, Home: close    Left/Right: adjust", x + pad,
+    top + #MENU * rowHeight + math.floor(4 * s))
+end
+
 local function drawPanel()
   local s = scale()
   local width = love.graphics.getDimensions()
@@ -292,8 +426,7 @@ local function drawPanel()
     lines[#lines + 1] = "New files received: restart Webmon to use them"
   end
   lines[#lines + 1] = "Remote: Back/Red = B, Green = A, Yellow = Select, Blue/0 = Start, CH+/CH- = L/R"
-  lines[#lines + 1] = "Exit: close Webmon    1: show or hide this panel"
-  lines[#lines + 1] = "Help and updates: github.com/pustal/Webmon"
+  lines[#lines + 1] = "Remote 1 or controller Home: Webmon menu (also quick save, tilt, zoom, quit)"
 
   local textFont = font(math.floor(24 * s))
   local pad = math.floor(18 * s)
@@ -313,7 +446,7 @@ end
 
 -- Draws the picker and/or panel over whatever the game drew, in screen space.
 local function drawOverlays()
-  if not picker.open and not panel.visible and not memory.restartIn then return end
+  if not picker.open and not panel.visible and not menu.open and not memory.restartIn then return end
   love.graphics.push("all")
   love.graphics.setCanvas()
   love.graphics.origin()
@@ -321,6 +454,7 @@ local function drawOverlays()
   love.graphics.setScissor()
   love.graphics.setBlendMode("alpha")
   if panel.visible then drawPanel() end
+  if menu.open then drawMenu() end
   if picker.open then drawPicker() end
   if memory.restartIn then drawRestartNotice() end
   love.graphics.pop()
@@ -346,6 +480,27 @@ local function pickerButton(button)
   elseif button == "dpright" then movePicker(VISIBLE_ROWS)
   elseif button == "a" then choose()
   elseif button == "b" or button == "back" then closePicker()
+  end
+end
+
+-- Keys and buttons while the menu is open (the game sees none of them).
+local function menuKey(key)
+  if key == "up" then moveMenu(-1)
+  elseif key == "down" then moveMenu(1)
+  elseif key == "left" then sideMenu(-1)
+  elseif key == "right" then sideMenu(1)
+  elseif key == "return" or key == "kpenter" or key == "space" or key == "z" then activateMenu()
+  elseif key == "escape" or key == "backspace" or key == "x" then toggleMenu()
+  end
+end
+
+local function menuButton(button)
+  if button == "dpup" then moveMenu(-1)
+  elseif button == "dpdown" then moveMenu(1)
+  elseif button == "dpleft" then sideMenu(-1)
+  elseif button == "dpright" then sideMenu(1)
+  elseif button == "a" then activateMenu()
+  elseif button == "b" or button == "back" or button == "start" then toggleMenu()
   end
 end
 
@@ -415,17 +570,16 @@ local function beforePresent()
     memory.restartIn = memory.restartIn - dt
     if memory.restartIn <= 0 then freshStart() end
   end
-  if webmon.takePanelToggles() % 2 == 1 then
-    panel.visible = not panel.visible
-    panel.hideIn = nil
+  if webmon.takePanelToggles() % 2 == 1 and not picker.open then
+    toggleMenu()
   end
   wrapInput()
   drawOverlays()
 end
 
--- Input callbacks: while the picker is open it takes the input, otherwise the
--- game's own function runs. game[name] is the game's current function.
-local game = {}
+-- Input callbacks: while the picker or the menu is open it takes the input,
+-- otherwise the game's own function runs. game[name] is the game's current function.
+local function overlayOpen() return picker.open or menu.open end
 local wrappers = {
   keypressed = function(key, ...)
     if memory.restartIn then
@@ -434,14 +588,15 @@ local wrappers = {
       return
     end
     if picker.open then return pickerKey(key) end
+    if menu.open then return menuKey(key) end
     if game.keypressed then return game.keypressed(key, ...) end
   end,
   keyreleased = function(...)
-    if picker.open then return end
+    if overlayOpen() then return end
     if game.keyreleased then return game.keyreleased(...) end
   end,
   textinput = function(...)
-    if picker.open then return end
+    if overlayOpen() then return end
     if game.textinput then return game.textinput(...) end
   end,
   gamepadpressed = function(joystick, button, ...)
@@ -451,10 +606,12 @@ local wrappers = {
       return
     end
     if picker.open then return pickerButton(button) end
+    if button == "guide" then return toggleMenu() end
+    if menu.open then return menuButton(button) end
     if game.gamepadpressed then return game.gamepadpressed(joystick, button, ...) end
   end,
   gamepadreleased = function(...)
-    if picker.open then return end
+    if overlayOpen() then return end
     if game.gamepadreleased then return game.gamepadreleased(...) end
   end,
 }

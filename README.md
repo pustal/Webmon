@@ -34,9 +34,16 @@ your own ROM.
    does not crowd the list; put anything else in `Webmon/roms`). Saves work the
    same way (`Webmon/saves`, RetroArch `saves/`, `.sav` or `.srm`), as do mod
    zips and carts.
+4. Mods that import from an N64 ROM (such as the
+   [Stadium 2 importer](https://github.com/Deftones565/gen1recomp-mod-stadium2-importer))
+   get the same picker for it: it lists the N64 ROMs you uploaded (the page's
+   **N64 ROMs** tab), the ones in the USB `Webmon/n64` folder and the Pokemon
+   ones in RetroArch `roms/` folders (`.z64`, `.n64` or `.v64`).
 
-Press **1** on the remote at any time to show or hide the upload page address
-and PIN (it also shows for a few seconds at start).
+Press **1** on the remote (or a controller's Home button) at any time for
+Webmon's menu: the upload page address and PIN, the game's keyboard shortcuts
+and quitting (see [Controls](#controls)). The address also shows for a few
+seconds at start.
 
 ## The upload page
 
@@ -54,10 +61,13 @@ network that send the PIN. It shows:
   TV, or download it to your computer;
 - **Memory for heavy mods**: the TV's memory, and an optional swap file (below);
 - **Mod data**: each game's per-playthrough mod folders, with their size, to
-  delete old map caches;
-- **Files**: upload, list and delete the game, ROMs, saves, mod zips and carts,
-  to TV storage or the USB `Webmon` folder. While the game's picker is open the
-  page says what it is waiting for, and new uploads appear in the picker by
+  delete old map caches or upload one built on a computer (below);
+- **Game saves**: download the game's save slots and the `.sav` battery saves
+  it exported;
+- **Files**: upload, list, download and delete the game, ROMs, saves, mod zips,
+  carts and N64 ROMs, to TV storage or the USB `Webmon` folder (RetroArch files
+  can be downloaded, not deleted). While the game's picker is open the page
+  says what it is waiting for, and new uploads appear in the picker by
   themselves.
 
 The game's own downloads (mod catalogue, updates) also use the TV's curl.
@@ -66,9 +76,9 @@ The game's own downloads (mod catalogue, updates) also use the TV's curl.
 
 | Place | Contents |
 |---|---|
-| `<USB>/Webmon/` | the `.love`; `roms/`, `saves/`, `mod-zips/`, `carts/` for the game's import screens |
+| `<USB>/Webmon/` | the `.love`; `roms/`, `saves/`, `mod-zips/`, `carts/`, `n64/` for the game's import screens |
 | `<USB>/Webmon/game-data/` | the game's own data: saves, settings, installed mods and its import cache (the decoded graphics and sound of each imported game, the biggest part). Used when the drive can be written; the first time, the data already on the TV is moved there |
-| `<USB>/roms/`, `<USB>/saves/` | RetroArch-style folders (any capitalisation, up to three levels deep): Pokemon titles are listed by the picker, nothing is changed |
+| `<USB>/roms/`, `<USB>/saves/` | RetroArch-style folders (any capitalisation, up to three levels deep): Pokemon titles (Game Boy and N64 ROMs, saves) are listed by the picker, nothing is changed |
 | Data folder `game/`, `inbox/`, `save/` | the same, on TV storage, when there is no writable USB `Webmon` folder (or you choose TV storage) |
 
 Keep the drive plugged in: without it Webmon falls back to the game data on TV
@@ -116,7 +126,26 @@ Mods keep their data per game and playthrough (`mod_storage/<game>/<id>/` in
 the game's data). When the game gives a playthrough a new id, for example after
 the app was closed during a build, a voxel mod starts a new cache and the old
 one stays behind. The upload page's **Mod data** section lists these folders
-with their size and date, and deletes old ones.
+with their size and date, and deletes old ones. Save in the game once and
+continue that save before a cache build: an unsaved new game gets a new id
+every time the game starts.
+
+A mod's cache is not tied to the TV, so it can be built on a computer and
+uploaded:
+
+1. Run the same gen1recomp release with LÖVE 11.5 on the computer, import the
+   same ROM, install the same mod version and build the cache there.
+2. Zip the playthrough folder from the computer's
+   `mod_storage/<game>/` (in LÖVE's save folder for `pokemon-love2d`: on macOS
+   `~/Library/Application Support/LOVE/pokemon-love2d`, on Windows
+   `%APPDATA%\LOVE\pokemon-love2d`, on Linux `~/.local/share/love/pokemon-love2d`).
+   Zipping the mod folders inside it works too.
+3. On the upload page, use **Upload .zip** on the playthrough you play on the
+   TV. Each mod folder in the zip replaces that mod's folder there (other mods
+   are kept), then restart Webmon.
+
+If anything differs (game release, mod version, ROM), the mod treats the
+cache as stale and builds it again.
 
 ## Controls
 
@@ -127,7 +156,27 @@ A game controller works as in gen1recomp. The TV remote:
 | Arrows | D-pad | | Yellow | Select |
 | OK, Green | A | | Blue, 0, Play | Start |
 | Back, Red | B | | CH+ / CH- | L / R |
-| 1 | Webmon's info panel (upload page address, PIN) | | Exit | Close Webmon |
+| 1 | Webmon's menu | | Exit | Close Webmon |
+
+A controller's **Home** (guide) button, which the game leaves unused, opens
+the menu too. The menu shows the upload page address and PIN, and gives a
+remote or controller the game's keyboard-only shortcuts:
+
+| Menu entry | Keyboard key it sends |
+|---|---|
+| Quick save / Quick load | F1 / F2 |
+| Tilt (3D view) | 3 |
+| Voxel view, next step (PotatoVoxel) | 8 |
+| Zoom level; zoom out / in | 4; - / = |
+| Camera farther / closer (voxel mods) | E / Q |
+| Colours | 2 |
+| Game speed slower / faster | 0 / 1 |
+| Mod manager | F10 |
+| Quit Webmon | (asks for a second OK) |
+
+Up/Down choose, OK runs it, Left/Right adjust the "/" entries, Back (B), 1 or
+Home close it. A shortcut does nothing where the game does not allow it (tilt
+only in free roam, for instance).
 
 In Webmon's picker: Up/Down move, Left/Right page, OK chooses, Back cancels.
 
@@ -153,7 +202,7 @@ Tests that run without a TV:
 
 - `tools/server-harness/run.sh <scratch folder>` runs the upload page with the
   host compiler (open `http://localhost:47811`);
-- `lua5.1 tools/bridge-test/test.lua src/lua/bridge.lua` checks the picker.
+- `lua5.1 tools/bridge-test/test.lua src/lua/bridge.lua` checks the picker, the menu and the memory countdown.
 
 ## How it works
 
@@ -162,11 +211,12 @@ Tests that run without a TV:
 | `src/main.cpp` | LÖVE's own `main` (from `src/love.cpp`) plus the webOS start-up; runs the newest `.love` or the setup screen, and again after the game asks LÖVE to restart |
 | `src/webos/Platform.cpp` | Data folder, logs, the remote mapped onto the game's keys, the info panel key |
 | `src/webos/Usb.cpp` | Root detection (Homebrew Channel exec), USB drives, the `Webmon` folder |
-| `src/webos/Library.cpp` | Where files live, linking the USB `Webmon` folder, the game's data folder (`XDG_DATA_HOME`), file lists including RetroArch folders |
+| `src/webos/Library.cpp` | Where files live, linking the USB `Webmon` folder, the game's data folder (`XDG_DATA_HOME`), file lists including RetroArch folders, mod data and game saves |
+| `src/webos/ZipReader.cpp` | Reading uploaded mod data archives ([miniz](https://github.com/richgel999/miniz)) and where their files go |
 | `src/webos/Downloader.cpp` | Downloads gen1recomp releases with the TV's curl |
 | `src/webos/Memory.cpp`, `src/webos/Swap.cpp` | Memory figures; the optional USB swap file (root) |
 | `src/server/WebServer.cpp`, `web/index.html` | The upload page (cpp-httplib) |
-| `src/webos/LuaBridge.cpp`, `src/lua/bridge.lua` | Lua API for the game and setup screen; the file picker gen1recomp asks for (`love.system.pickFile` / `getPickedFile`) and the info panel |
+| `src/webos/LuaBridge.cpp`, `src/lua/bridge.lua` | Lua API for the game and setup screen; the file picker gen1recomp asks for (`love.system.pickFile` / `getPickedFile`, including mods' required imports), the menu and memory management |
 | `setup/` | The setup screen (Lua) |
 
 ## Licence
