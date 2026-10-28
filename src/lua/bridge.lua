@@ -72,11 +72,16 @@ local MEMORY_LOW_REPEAT_MAX_SECONDS = 60 -- ... an interval that doubles up to t
 local MEMORY_USEFUL_MB = 16      -- a collection freeing less than this was not worth its pause
 local MEMORY_PAUSE_BUDGET = 0.05 -- forced clean-ups may take at most this share of play time
                                  -- (a 900 ms one waits 18 s); Lua's own collector runs between
-local MEMORY_SLICE_SHARE = 0.25  -- a clean-up works this share of each frame's time, so the game never stops
+local MEMORY_SLICE_SHARE = 0.5   -- a clean-up works this share of each frame's time, so the game never stops
 local MEMORY_SLICE_MIN_MS = 4    -- ... at least this long per frame
-local MEMORY_SLICE_MAX_MS = 30   -- ... at most this long per frame
+local MEMORY_SLICE_MAX_MS = 60   -- ... at most this long per frame
 local MEMORY_SLICE_MAX_SECONDS = 8 -- ... and finishes in one go if it has not after this long
 local MEMORY_CRITICAL_MB = 130   -- still under this after a collection: critical
+local MEMORY_EMERGENCY_MB = 80   -- under this the TV is close to freezing: clean up every few seconds, whatever it costs
+local MEMORY_CRITICAL_MAX_SECONDS = 40 -- between EMERGENCY and CRITICAL, the interval doubles up to this
+                                 -- while memory bounces straight back after each clean-up
+local MEMORY_REBOUND_WINDOW_SECONDS = 60 -- this many critical clean-ups in this window...
+local MEMORY_REBOUND_TIMES = 3   -- ... mean memory cannot be recovered: offer a fresh start
 local MEMORY_CRITICAL_TIMES = 3  -- ... this many times in a row: offer a fresh start
 local PERF_LOG_SECONDS = 15      -- how often frame rate and clean-up time are logged
 local RESTART_COUNTDOWN_SECONDS = 15
@@ -247,6 +252,9 @@ local memory = {
   nextAllowed = -math.huge,                     -- no forced clean-up before this (time budget)
   slicing = nil,  -- the clean-up being done a slice per frame: reason, startedAt, before, workMs, cycles
   lowRepeatSeconds = MEMORY_LOW_REPEAT_SECONDS, -- current low-memory interval (adaptive)
+  criticalRepeatSeconds = MEMORY_LOW_REPEAT_SECONDS, -- current critical interval (adaptive)
+  lastCriticalCollect = -math.huge,
+  recentCritical = {},  -- times of the critical clean-ups in the last MEMORY_REBOUND_WINDOW_SECONDS
   peakMb = 0,
   criticalCount = 0,
   restartIn = nil,          -- seconds left on the fresh-start countdown, when shown
@@ -596,6 +604,36 @@ end
 
 -- ---- Wrapping the game's callbacks -----------------------------------------------
 
+-- Starts the fresh-start countdown (unless one runs, the game is quitting, or
+-- the player postponed it). @param why for the log
+local function offerFreshStart(now, why)
+  if memory.restartIn or memory.quitting or now < memory.snoozeUntil then return end
+  memory.restartIn = RESTART_COUNTDOWN_SECONDS
+  print(string.format("[Webmon] memory: %s; fresh start in %d s", why, RESTART_COUNTDOWN_SECONDS))
+end
+
+-- Bookkeeping for a full clean-up near the critical level: memory coming
+-- straight back doubles the interval, and several in a minute mean this
+-- session cannot recover its memory, so the fresh start is offered.
+local function noteCriticalCleanup(now)
+  if now - memory.lastCriticalCollect < MEMORY_CRITICAL_MAX_SECONDS then
+    memory.criticalRepeatSeconds = math.min(memory.criticalRepeatSeconds * 2, MEMORY_CRITICAL_MAX_SECONDS)
+  else
+    memory.criticalRepeatSeconds = MEMORY_LOW_REPEAT_SECONDS
+  end
+  memory.lastCriticalCollect = now
+  local recent = {}
+  for _, time in ipairs(memory.recentCritical) do
+    if now - time < MEMORY_REBOUND_WINDOW_SECONDS then recent[#recent + 1] = time end
+  end
+  recent[#recent + 1] = now
+  memory.recentCritical = recent
+  if #recent >= MEMORY_REBOUND_TIMES then
+    offerFreshStart(now, string.format("%d clean-ups near the limit in %d s and memory keeps coming back",
+      #recent, MEMORY_REBOUND_WINDOW_SECONDS))
+  end
+end
+
 -- Records a finished clean-up: budget, backoff, log, and the fresh-start check.
 local function finishCleanup(cleanup, now)
   memory.slicing = nil
@@ -625,11 +663,8 @@ local function finishCleanup(cleanup, now)
   else
     memory.criticalCount = 0
   end
-  if memory.criticalCount >= MEMORY_CRITICAL_TIMES and not memory.restartIn and not memory.quitting
-      and now >= memory.snoozeUntil then
-    memory.restartIn = RESTART_COUNTDOWN_SECONDS
-    print(string.format("[Webmon] memory: TV still has only %d MB after collecting; fresh start in %d s",
-      afterAvailableMb, RESTART_COUNTDOWN_SECONDS))
+  if memory.criticalCount >= MEMORY_CRITICAL_TIMES then
+    offerFreshStart(now, string.format("TV still has only %d MB after collecting", afterAvailableMb))
   end
 end
 
@@ -676,15 +711,22 @@ local function manageMemory(dt, now)
   --    working in between without stopping the game;
   --  * both triggers back off while collections free little (steady 3D play
   --    often keeps the TV under MEMORY_LOW_MB with nothing to free);
-  --  * near the critical level neither applies: every few seconds, to keep
-  --    the TV from freezing.
+  --  * near the critical level neither applies: a full clean-up at once. If
+  --    memory bounces straight back (the game re-creates what was freed),
+  --    repeating it only freezes the game, so the interval doubles, and
+  --    several in a minute offer the fresh start; under the emergency level
+  --    it stays every few seconds, to keep the TV from freezing.
   local critical = availableMb > 0 and availableMb < MEMORY_CRITICAL_MB
+  local emergency = availableMb > 0 and availableMb < MEMORY_EMERGENCY_MB
+  local criticalAllowed = emergency
+    or now - memory.lastCriticalCollect >= memory.criticalRepeatSeconds
   local lowInterval = critical and MEMORY_LOW_REPEAT_SECONDS or memory.lowRepeatSeconds
   local grew = processMb - memory.lastCollectMb >= memory.growthLimitMb
   local low = availableMb > 0 and availableMb < MEMORY_LOW_MB
     and now - memory.lastLowCollect >= lowInterval
-  local allowed = critical or now >= memory.nextAllowed
-  if memory.slicing and not critical then return end
+  local allowed
+  if critical then allowed = criticalAllowed else allowed = now >= memory.nextAllowed end
+  if memory.slicing and not (critical and criticalAllowed) then return end
   if (grew or low) and allowed then
     local cleanup = {
       reason = low and "TV low" or "grew",
@@ -704,6 +746,7 @@ local function manageMemory(dt, now)
       collectgarbage("collect")
       cleanup.workMs = (love.timer.getTime() - started) * 1000
       cleanup.reason = cleanup.reason .. ", at once"
+      noteCriticalCleanup(now)
       finishCleanup(cleanup, now)
     else
       memory.slicing = cleanup

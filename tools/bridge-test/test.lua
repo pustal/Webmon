@@ -154,10 +154,20 @@ end
 assert(fullCollects == 0, "town: no stop-the-world clean-up, got " .. fullCollects)
 assert(finished >= 1 and finished <= 6, "town: time budget, " .. finished .. " clean-ups in a minute")
 
--- Near the critical level: a full clean-up at once, every few seconds.
+-- Under the emergency level: a full clean-up at once, every few seconds.
 reset(); freeOnCycle = 0
-memoryNow = { 900, 100 }
+memoryNow = { 900, 60 }
 for _ = 1, 30 do frame(1) end
-assert(fullCollects >= 5, "critical: clean-ups every few seconds, got " .. fullCollects)
+assert(fullCollects >= 5, "emergency: clean-ups every few seconds, got " .. fullCollects)
+
+-- Near the critical level with memory bouncing straight back after each
+-- clean-up (the game re-creates what was freed): the interval backs off
+-- instead of freezing the game every few seconds, and the fresh start is offered.
+reset(); freeOnCycle = 0
+memoryNow = { 800, 117 }
+for _ = 1, 60 do frame(1) end
+assert(fullCollects >= 2 and fullCollects <= 6, "rebound: backed off, got " .. fullCollects .. " in a minute (12 without)")
+-- (The fresh start this offers is exercised by the countdown test above; the
+-- game has already quit once here, and Webmon offers none while quitting.)
 collectgarbage, print = realCollect, realPrint
 print("bridge test ok")

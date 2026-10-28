@@ -107,13 +107,17 @@ lot of 3D data at once. Webmon helps in two ways:
   about 4 seconds at 10 fps). Clean-ups also get a time budget, at most 5% of
   play time (after 900 ms of work the next waits 18 seconds), with Lua's own
   collector working in between, and back off while they free little. Near
-  the critical level below none of this applies: a full clean-up runs at once,
-  every 5 seconds.
+  the critical level below a full clean-up runs at once; if memory bounces
+  straight back (the game re-creates what was freed) the interval doubles up
+  to 40 seconds instead of freezing the game every few seconds, except under
+  80 MB, where it stays every 5 seconds to keep the TV from freezing.
   The log (`stdout.log`) records each clean-up with its pause and every new
   peak, plus the frame rate every 15 seconds and, once, the GPU driver, the
   window size and whether LuaJIT's compiler is on.
 - **A fresh start before the TV freezes.** When the TV still has less than
-  130 MB available after three clean-ups in a row, Webmon shows a 15-second
+  130 MB available after three clean-ups in a row, or memory comes straight
+  back after three clean-ups near that level within a minute (a session whose
+  Lua data keeps growing ends up there), Webmon shows a 15-second
   countdown, then quits the game cleanly and starts again as a new process,
   which hands all its memory back to the TV. OK restarts at once; Back keeps
   playing (it asks again after two minutes if memory stays that low). Unsaved
